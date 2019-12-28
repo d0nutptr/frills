@@ -35,7 +35,13 @@ impl ClientListener {
     pub async fn listen(mut self) {
         loop {
             match self.listener.accept().await {
-                Ok((_socket, addr)) => println!("new client: {:?}", addr),
+                Ok((_socket, addr)) => {
+                    let (sender, receiver) = channel(1);
+
+                    let client = Client::new(_socket, sender, receiver);
+
+                    tokio::spawn(client);
+                },
                 Err(e) => println!("couldn't get client: {:?}", e),
             }
         }
@@ -92,7 +98,7 @@ impl Decoder for FrillsCodec {
 }
 
 #[pin_project]
-struct Client {
+pub struct Client {
     #[pin]
     stream: Framed<TcpStream, FrillsCodec>,// TcpStream
     sender: Sender<ClientAndMasterConversation>,
@@ -118,14 +124,17 @@ impl Future for Client {
 
         match projected.stream.poll_next(cx) {
             Poll::Ready(Some(item)) => {
+                cx.waker().wake_by_ref();
                 // do a thing
+                println!("RECEIVED A MESSAGE FROM TCP STREAM")
             },
             _ => {}
         };
 
         match projected.receiver.poll_recv(cx) {
             Poll::Ready(Some(item)) => {
-
+                cx.waker().wake_by_ref();
+                println!("RECEIVED A MESSAGE FROM MASTER")
             },
             _ => {}
         };
@@ -135,14 +144,16 @@ impl Future for Client {
 }
 
 #[derive(Deserialize, Serialize)]
-enum FrillsMessage {}
+pub enum FrillsMessage {
+    Empty
+}
 
-enum ClientAndMasterConversation {
+pub enum ClientAndMasterConversation {
     ClientToListener(ClientToMasterMessage),
     MasterToClient(MasterToClientMessage)
 }
 
-enum ClientToMasterMessage {
+pub enum ClientToMasterMessage {
     NewMessage {
         topic: u32,
         message: Vec<u32>
@@ -160,7 +171,7 @@ enum ClientToMasterMessage {
     }
 }
 
-enum MasterToClientMessage {
+pub enum MasterToClientMessage {
     NewMessage {
         message_id: u32,
         message: Vec<u32>,

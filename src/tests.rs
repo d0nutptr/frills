@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 use crate::server::ClientListener;
+use tokio::net::TcpStream;
+use tokio::prelude::*;
+use std::net::{SocketAddr, SocketAddrV4, Ipv4Addr};
 
 #[test]
 fn bincode() {
@@ -39,6 +42,20 @@ fn test_tcp_connection() {
 
     runtime.block_on(async {
         let mut listener = ClientListener::new(12345).await;
+
+        tokio::spawn(async {
+            let test_data = crate::server::FrillsMessage::Empty{ };
+
+            let mut stream = TcpStream::connect(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 12345)).await.unwrap();
+
+            println!("Connected to test bench.");
+
+            for i in 0 .. 100 {
+                stream.write_all(&bincode::serialize(&test_data).unwrap()).await;
+            }
+
+            println!("Data wrote!");
+        });
 
         listener.listen().await;
     });
