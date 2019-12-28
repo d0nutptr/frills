@@ -1,5 +1,7 @@
+extern crate sharded_slab;
 extern crate tokio;
+extern crate tokio_util;
 
 mod client;
-mod server;
+pub mod server;
 mod tests;
