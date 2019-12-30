@@ -10,12 +10,15 @@ use std::future::Future;
 use std::task::{Context, Poll};
 use tokio::prelude::*;
 use bytes::{BytesMut, BufMut};
-use futures::io::Error;
-use futures_util::pin_mut;
+use futures::io::Error as IOError;
+use futures_util::sink::SinkExt;
+use futures_util::{pin_mut, select};
 use futures_core::stream::Stream;
-use futures::future::{select, Either};
 use std::pin::Pin;
 use pin_project::pin_project;
+use std::fmt::Debug;
+use serde::export::Formatter;
+use futures::future::Either;
 
 pub struct ClientListener {
     listener: TcpListener,
@@ -40,7 +43,7 @@ impl ClientListener {
 
                     let client = Client::new(_socket, sender, receiver);
 
-                    tokio::spawn(client);
+                    tokio::spawn(client.run());
                 },
                 Err(e) => println!("couldn't get client: {:?}", e),
             }
@@ -52,8 +55,14 @@ struct FrillsCodec {}
 
 struct FrillsCodecError {}
 
+impl Debug for FrillsCodecError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        Ok(())
+    }
+}
+
 impl From<std::io::Error> for FrillsCodecError {
-    fn from(_: Error) -> Self {
+    fn from(_: std::io::Error) -> Self {
         FrillsCodecError{}
     }
 }
@@ -114,33 +123,105 @@ impl Client {
             receiver
         }
     }
+
+    pub async fn run (mut self) {
+        let mut client_stream = self.stream;
+        let mut master_receiver = self.receiver;
+
+        loop {
+            let next = {
+                let mut either = next_either(client_stream, master_receiver);
+                let next = either.next().await.unwrap();
+
+                // release the streams so we can work with them again (namely, tcp_stream)
+                let (released_client_stream, released_master_receiver) = either.release();
+                client_stream = released_client_stream;
+                master_receiver = released_master_receiver;
+
+                next
+            };
+
+            match next {
+                // TCP
+                Either::Left(item) => {
+                    client_stream.send(item.unwrap());
+                    println!("Got a message!");
+                },
+                // MASTER
+                Either::Right(item) => {
+
+                }
+            };
+        }
+
+        // return the streams
+        self.stream = client_stream;
+        self.receiver = master_receiver;
+    }
 }
 
-impl Future for Client {
-    type Output = ();
+#[pin_project]
+struct NextEither<A, B>
+where
+    A: Stream,
+    B: Stream {
+    #[pin]
+    left: A,
+    #[pin]
+    right: B
+}
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut projected = self.project();
+impl<A, B> NextEither<A, B>
+where
+    A: Stream,
+    B: Stream {
+    fn new(left: A, right: B) -> Self {
+        Self {
+            left,
+            right
+        }
+    }
 
-        match projected.stream.poll_next(cx) {
-            Poll::Ready(Some(item)) => {
-                cx.waker().wake_by_ref();
-                // do a thing
-                println!("RECEIVED A MESSAGE FROM TCP STREAM")
+    /// Releases the streams
+    fn release(self) -> (A, B) {
+        (self.left, self.right)
+    }
+}
+
+impl<A, B> Stream for NextEither<A, B>
+where
+    A: Stream,
+    B: Stream {
+    type Item = Either<A::Item, B::Item>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut projection = self.project();
+
+        // todo either require that these are fused (we need to check that framed streams can be
+        // fused and then produce values after receiving more bytes
+        match projection.left.poll_next(cx) {
+            Poll::Ready(Some(output)) => {
+                return Poll::Ready(Some(Either::Left(output)))
             },
-            _ => {}
+            _ => {},
         };
 
-        match projected.receiver.poll_recv(cx) {
-            Poll::Ready(Some(item)) => {
-                cx.waker().wake_by_ref();
-                println!("RECEIVED A MESSAGE FROM MASTER")
+        match projection.right.poll_next(cx) {
+            Poll::Ready(Some(output)) => {
+                return Poll::Ready(Some(Either::Right(output)))
             },
-            _ => {}
+            _ => {},
         };
 
         Poll::Pending
     }
+}
+
+fn next_either<A, B>(left: A, right: B) -> NextEither<A, B>
+where
+    A: Stream,
+    B: Stream {
+    NextEither::new(left, right)
 }
 
 #[derive(Deserialize, Serialize)]
