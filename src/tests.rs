@@ -1,16 +1,22 @@
+use crate::codec::{FrillsClientToServer, FrillsCodec, FrillsMessage, FrillsServerToClient};
+use futures::Stream;
+use futures_util::sink::SinkExt;
+use futures_util::stream::StreamExt;
 use serde::{Deserialize, Serialize};
-use crate::server::ClientListener;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, IpAddr};
 use tokio::net::TcpStream;
 use tokio::prelude::*;
-use std::net::{SocketAddr, SocketAddrV4, Ipv4Addr};
+use tokio_util::codec::Framed;
+use crate::server::{ClientConnectListener, FrillsServer};
+use crate::client::FrillsClient;
 
 #[test]
 fn bincode() {
     let data = ExampleNestedStructure {
         version: 123,
         value: InternalValue {
-            value: r#"{"msg": "Some Fake Data"}"#.to_string()
-        }
+            value: r#"{"msg": "Some Fake Data"}"#.to_string(),
+        },
     };
 
     let mut result = match bincode::serialize(&data) {
@@ -37,37 +43,46 @@ fn bincode() {
 }
 
 #[test]
-fn test_tcp_connection() {
+fn test_connect_disconnect() {
     let mut runtime = tokio::runtime::Runtime::new().unwrap();
 
     runtime.block_on(async {
-        let mut listener = ClientListener::new(12345).await;
+        let mut server = FrillsServer::new(12345);
 
         tokio::spawn(async {
-            let test_data = crate::server::FrillsMessage::Empty{ };
+            let remote = SocketAddr::new(IpAddr::from([0, 0, 0, 0]), 12345);
 
-            let mut stream = TcpStream::connect(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 12345)).await.unwrap();
+            let mut client = FrillsClient::new("TestService", remote).await.unwrap();
 
-            println!("Connected to test bench.");
+            let topic_name = "TestTopic";
 
-            for i in 0 .. 100 {
-                stream.write_all(&bincode::serialize(&test_data).unwrap()).await;
+            client.register_topic(topic_name).await;
+            client.subscribe_to_topic(topic_name).await;
+            client.push_message(topic_name, "Hello, world!".as_bytes().to_vec()).await;
+
+            let mut message_stream = client.get_message_channel();
+
+            match message_stream.next().await {
+                Some(message) => {
+                    println!("Message ({}): {}", message.message_id, String::from_utf8(message.message).unwrap());
+                },
+                _ => {
+                    println!("Failed to fetch message");
+                }
             }
-
-            println!("Data wrote!");
         });
 
-        listener.listen().await;
+        server.run().await;
     });
 }
 
 #[derive(Serialize, Deserialize)]
 struct ExampleNestedStructure {
     pub version: u32,
-    pub value: InternalValue
+    pub value: InternalValue,
 }
 
 #[derive(Serialize, Deserialize)]
 struct InternalValue {
-    pub value: String
+    pub value: String,
 }

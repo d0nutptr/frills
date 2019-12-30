@@ -1,261 +1,228 @@
-use sharded_slab::Slab;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use futures_util::stream::StreamExt;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc::{Sender, Receiver, channel};
-use tokio_util::codec::{Encoder, Decoder, Framed};
-use std::net::{SocketAddr, IpAddr, SocketAddrV4, Ipv4Addr};
-use std::future::Future;
-use std::task::{Context, Poll};
-use tokio::prelude::*;
-use bytes::{BytesMut, BufMut};
-use futures::io::Error as IOError;
-use futures_util::sink::SinkExt;
-use futures_util::{pin_mut, select};
-use futures_core::stream::Stream;
-use std::pin::Pin;
+use tokio::sync::mpsc::{channel, Receiver, Sender};
+use crate::server::{ClientConnectListener, ClientThread, ClientToMasterMessage};
 use pin_project::pin_project;
-use std::fmt::Debug;
-use serde::export::Formatter;
+use crate::server::message::{NewConnectionNotification, NewMessage};
+use crate::utils::next_either;
+use futures::StreamExt;
 use futures::future::Either;
+use std::collections::{HashMap, HashSet, VecDeque};
+use futures::future::join_all;
+use slab::Slab;
 
-pub struct ClientListener {
-    listener: TcpListener,
-    clients: Slab<Sender<ClientAndMasterConversation>>
+pub struct FrillsServer {
+    connection_receiver: Option<Receiver<NewConnectionNotification>>,
+    client_thread_receiver: Option<Receiver<ClientToMasterMessage>>,
+    client_thread_sender: Sender<ClientToMasterMessage>,
+    services: HashMap<String, Service>,
+    topics: HashMap<String, Topic>,
+    shutdown: bool
 }
 
-impl ClientListener {
-    pub async fn new(port: u16) -> Self {
-        let listener = TcpListener::bind(SocketAddr::new(IpAddr::from([0, 0, 0, 0]), port)).await.unwrap();
+impl FrillsServer {
+    pub fn new(port: u16) -> Self {
+        let (connection_sender, connection_receiver) = channel(1);
+        let (client_thread_sender, client_thread_receiver) = channel(1);
+
+        // spawn connection listener
+        tokio::spawn(async move {
+            let connection_listener = ClientConnectListener::new(port, connection_sender).await;
+
+            connection_listener.listen().await;
+        });
 
         Self {
-            listener,
-            clients: Slab::new()
+            connection_receiver: Some(connection_receiver),
+            client_thread_receiver: Some(client_thread_receiver),
+            client_thread_sender,
+            shutdown: false,
+            services: HashMap::new(),
+            topics: HashMap::new()
         }
     }
 
-    pub async fn listen(mut self) {
-        loop {
-            match self.listener.accept().await {
-                Ok((_socket, addr)) => {
-                    let (sender, receiver) = channel(1);
+    pub async fn run(mut self) {
+        while !self.shutdown {
+            let next_message = {
+                let mut connection_receiver = self.connection_receiver.take().unwrap();
+                let mut client_thread_receiver = self.client_thread_receiver.take().unwrap();
 
-                    let client = Client::new(_socket, sender, receiver);
-
-                    tokio::spawn(client.run());
-                },
-                Err(e) => println!("couldn't get client: {:?}", e),
-            }
-        }
-    }
-}
-
-struct FrillsCodec {}
-
-struct FrillsCodecError {}
-
-impl Debug for FrillsCodecError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
-        Ok(())
-    }
-}
-
-impl From<std::io::Error> for FrillsCodecError {
-    fn from(_: std::io::Error) -> Self {
-        FrillsCodecError{}
-    }
-}
-
-impl Encoder for FrillsCodec {
-    type Item = FrillsMessage;
-    type Error = FrillsCodecError;
-
-    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        match bincode::serialize(&item) {
-            Ok(output) => {
-                dst.reserve(output.len());
-                dst.put_slice(&output);
-                Ok(())
-            },
-            _ => Err(FrillsCodecError{})
-        }
-    }
-}
-
-impl Decoder for FrillsCodec {
-    type Item = FrillsMessage;
-    type Error = FrillsCodecError;
-
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        if src.is_empty() {
-            return Ok(None);
-        }
-
-        match bincode::deserialize::<FrillsMessage>(src) {
-            Ok(output) => {
-                // we need to know how many bytes to slice off now
-                let len = bincode::serialize(&output).unwrap().len();
-
-                src.split_to(len);
-
-                Ok(Some(output))
-            },
-            Err(e) => Ok(None)
-        }
-    }
-}
-
-#[pin_project]
-pub struct Client {
-    #[pin]
-    stream: Framed<TcpStream, FrillsCodec>,// TcpStream
-    sender: Sender<ClientAndMasterConversation>,
-    #[pin]
-    receiver: Receiver<ClientAndMasterConversation>
-}
-
-impl Client {
-    pub fn new(stream: TcpStream, sender: Sender<ClientAndMasterConversation>, receiver: Receiver<ClientAndMasterConversation>) -> Self {
-        Self {
-            stream: Framed::new(stream, FrillsCodec{}),
-            sender,
-            receiver
-        }
-    }
-
-    pub async fn run (mut self) {
-        let mut client_stream = self.stream;
-        let mut master_receiver = self.receiver;
-
-        loop {
-            let next = {
-                let mut either = next_either(client_stream, master_receiver);
-                let next = either.next().await.unwrap();
+                let mut either = next_either(connection_receiver, client_thread_receiver);
+                let next_message = either.next().await.unwrap();
 
                 // release the streams so we can work with them again (namely, tcp_stream)
-                let (released_client_stream, released_master_receiver) = either.release();
-                client_stream = released_client_stream;
-                master_receiver = released_master_receiver;
+                let (released_connection_receiver, released_client_thread_receiver) = either.release();
 
-                next
+                self.connection_receiver.replace(released_connection_receiver);
+                self.client_thread_receiver.replace(released_client_thread_receiver);
+
+                next_message
             };
 
-            match next {
-                // TCP
-                Either::Left(item) => {
-                    client_stream.send(item.unwrap());
-                    println!("Got a message!");
-                },
-                // MASTER
-                Either::Right(item) => {
-
+            match next_message {
+                // New Connection
+                Either::Left(message) => {
+                    self.create_new_client(message).await;
+                }
+                // New client thread
+                Either::Right(message) => {
+                    self.process_client_message(message).await;
                 }
             };
         }
-
-        // return the streams
-        self.stream = client_stream;
-        self.receiver = master_receiver;
     }
-}
 
-#[pin_project]
-struct NextEither<A, B>
-where
-    A: Stream,
-    B: Stream {
-    #[pin]
-    left: A,
-    #[pin]
-    right: B
-}
+    async fn create_new_client(&mut self, new_connection_notification: NewConnectionNotification) {
+        let client = ClientThread::new(new_connection_notification.stream, self.client_thread_sender.clone());
+        tokio::spawn(client.run());
+    }
 
-impl<A, B> NextEither<A, B>
-where
-    A: Stream,
-    B: Stream {
-    fn new(left: A, right: B) -> Self {
-        Self {
-            left,
-            right
+    async fn process_client_message(&mut self, message: ClientToMasterMessage) {
+        match message {
+            ClientToMasterMessage::Shutdown => {
+                self.perform_shutdown();
+            },
+            ClientToMasterMessage::RegisterTopic { name } => {
+                self.register_topic(name);
+            },
+            ClientToMasterMessage::RegisterService { name } => {
+                self.register_service(name);
+            },
+            ClientToMasterMessage::SubscribeServiceToTopic { topic, service } => {
+                self.subscribe_service_to_topic(topic, service);
+            },
+            ClientToMasterMessage::PushMessage { topic, message } => {
+                self.new_message(topic, message).await;
+            },
+            ClientToMasterMessage::PullMessage { service, client } => {
+                self.pull_message(service, client).await;
+            },
+            _ => {}
+        };
+    }
+
+    fn perform_shutdown(&mut self) {
+        self.shutdown = true;
+    }
+
+    fn register_topic(&mut self, name: String) {
+        if !self.topics.contains_key(&name) {
+            self.topics.insert(name, Topic::new());
         }
     }
 
-    /// Releases the streams
-    fn release(self) -> (A, B) {
-        (self.left, self.right)
+    fn register_service(&mut self, name: String) {
+        if !self.services.contains_key(&name) {
+            self.services.insert(name, Service::new());
+        }
     }
-}
 
-impl<A, B> Stream for NextEither<A, B>
-where
-    A: Stream,
-    B: Stream {
-    type Item = Either<A::Item, B::Item>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut projection = self.project();
-
-        // todo either require that these are fused (we need to check that framed streams can be
-        // fused and then produce values after receiving more bytes
-        match projection.left.poll_next(cx) {
-            Poll::Ready(Some(output)) => {
-                return Poll::Ready(Some(Either::Left(output)))
-            },
-            _ => {},
+    fn subscribe_service_to_topic(&mut self, topic_name: String, service_name: String) {
+        let topic = match self.topics.get_mut(&topic_name) {
+            Some(topic) => topic,
+            None => return
         };
 
-        match projection.right.poll_next(cx) {
-            Poll::Ready(Some(output)) => {
-                return Poll::Ready(Some(Either::Right(output)))
+        if self.services.contains_key(&service_name) {
+            topic.register_service(service_name);
+        }
+    }
+
+    async fn new_message(&mut self, topic: String, message: Vec<u8>) {
+        let services: Vec<&String> = match self.topics.get(&topic) {
+            Some(topic) => {
+                topic.registered_services.iter().collect()
             },
-            _ => {},
+            _ => { return }
         };
 
-        Poll::Pending
+        for service_name in services {
+            let service = match self.services.get_mut(service_name) {
+                Some(service) => service,
+                _ => { continue }
+            };
+
+            service.enqueue_message(Message {
+                data: message.clone()
+            }).await;
+        }
+    }
+
+    async fn pull_message(&mut self, service: String, client: Sender<NewMessage>) {
+        match self.services.get_mut(&service) {
+            Some(service) => {
+                service.pull_next_message(client.clone()).await;
+            },
+            _ => {}
+        }
     }
 }
 
-fn next_either<A, B>(left: A, right: B) -> NextEither<A, B>
-where
-    A: Stream,
-    B: Stream {
-    NextEither::new(left, right)
+struct Topic {
+    registered_services: HashSet<String>,
 }
 
-#[derive(Deserialize, Serialize)]
-pub enum FrillsMessage {
-    Empty
-}
+impl Topic {
+    fn new() -> Self {
+        Self {
+            registered_services: HashSet::new(),
+        }
+    }
 
-pub enum ClientAndMasterConversation {
-    ClientToListener(ClientToMasterMessage),
-    MasterToClient(MasterToClientMessage)
-}
-
-pub enum ClientToMasterMessage {
-    NewMessage {
-        topic: u32,
-        message: Vec<u32>
-    },
-    Ack {
-        client_id: u32,
-        message_id: u32
-    },
-    Nack {
-        client_id: u32,
-        message_id: u32
-    },
-    Disconnect {
-        client_id: u32
+    fn register_service(&mut self, service_name: String) {
+        self.registered_services.insert(service_name);
     }
 }
 
-pub enum MasterToClientMessage {
-    NewMessage {
-        message_id: u32,
-        message: Vec<u32>,
+struct Service {
+    registered_clients: HashSet<u32>,
+    unsatisfied_messages: Slab<Message>,
+    enqueued_messages: VecDeque<Message>,
+    pending_clients: VecDeque<Sender<NewMessage>>
+}
+
+impl Service {
+    fn new() -> Self {
+        Self {
+            registered_clients: HashSet::new(),
+            unsatisfied_messages: Slab::with_capacity(1023),
+            enqueued_messages: VecDeque::new(),
+            pending_clients: VecDeque::new()
+        }
+    }
+
+    fn register_client(&mut self, client_id: u32) {
+        self.registered_clients.insert(client_id);
+    }
+
+    async fn enqueue_message(&mut self, message: Message) {
+        if !self.pending_clients.is_empty() {
+            let message_id = self.unsatisfied_messages.insert(message.clone());
+            let mut client = self.pending_clients.pop_front().unwrap();
+            client.send(NewMessage {
+                message_id: message_id as u32,
+                message: message.data
+            }).await;
+        } else {
+            self.enqueued_messages.push_back(message);
+        }
+    }
+
+    async fn pull_next_message(&mut self, mut client: Sender<NewMessage>) {
+        if self.enqueued_messages.is_empty() {
+            self.pending_clients.push_back(client);
+        } else {
+            let next_message = self.enqueued_messages.pop_front().unwrap();
+            let message_id = self.unsatisfied_messages.insert(next_message.clone());
+
+            client.send(NewMessage {
+                message_id: message_id as u32,
+                message: next_message.data
+            }).await;
+        }
     }
 }
 
+#[derive(Clone)]
+struct Message {
+    data: Vec<u8>,
+}
