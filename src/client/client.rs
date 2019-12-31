@@ -6,18 +6,20 @@ use futures_util::sink::SinkExt;
 use pin_project::pin_project;
 use crate::tokio::stream::StreamExt;
 use tokio::sync::mpsc::{Sender, Receiver, channel};
-use tokio::sync::broadcast;
 use crate::utils::next_either;
 use futures::future::Either;
 use futures::Stream;
 use futures::task::{Context, Poll};
 use std::pin::Pin;
 
+#[pin_project]
 pub struct FrillsClient {
     service_name: String,
     worker_channel: Sender<FrillsClientTask>,
-    worker_broadcast_sender: broadcast::Sender<UnAckedFrillsMessage>,
-    worker_broadcast_receiver: broadcast::Receiver<UnAckedFrillsMessage>
+    worker_broadcast_sender: Sender<UnAckedFrillsMessage>,
+    #[pin]
+    worker_broadcast_receiver: Receiver<UnAckedFrillsMessage>,
+    subscribed: bool
 }
 
 impl FrillsClient {
@@ -27,8 +29,8 @@ impl FrillsClient {
             _ => return None
         };
 
-        let (client_sender, client_receiver) = channel(1);
-        let (worker_broadcast_sender, worker_broadcast_receiver) = broadcast::channel(64);
+        let (mut client_sender, client_receiver) = channel(100_000);
+        let (worker_broadcast_sender, worker_broadcast_receiver) = channel(100_000);
 
         let cloned_worker_sender = worker_broadcast_sender.clone();
 
@@ -37,48 +39,33 @@ impl FrillsClient {
             worker.run().await;
         });
 
+        client_sender.send(FrillsClientTask::RegisterService { name: service_name.to_string() }).await;
+
         let mut new_client = Self {
             service_name: service_name.to_string(),
             worker_channel: client_sender,
             worker_broadcast_sender,
-            worker_broadcast_receiver
+            worker_broadcast_receiver,
+            subscribed: false
         };
-
-        new_client.register_service().await;
 
         Some(new_client)
     }
 
-    async fn register_service(&mut self) {
-        self.worker_channel.send(FrillsClientTask::RegisterService { name: self.service_name.clone() }).await;
-    }
-
-    pub async fn register_topic(&mut self, topic: &str) {
-        self.worker_channel.send(FrillsClientTask::RegisterTopic { name: topic.to_string() }).await;
-    }
-
-    pub async fn subscribe_to_topic(&mut self, topic: &str) {
-        self.worker_channel.send(FrillsClientTask::SubscribeToTopic { name: topic.to_string() }).await;
-    }
-
-    pub async fn push_message(&mut self, topic: &str, message: Vec<u8>) {
-        self.worker_channel.send(FrillsClientTask::PushMessage { topic: topic.to_string(), message }).await;
-    }
-
-    pub fn get_message_channel(&self) -> FrillsClientMessageStream {
-        FrillsClientMessageStream::new(self.worker_channel.clone(), self.worker_broadcast_sender.subscribe())
+    pub fn get_client_handle(&self) -> FrillsClientHandle {
+        FrillsClientHandle::new(self.worker_channel.clone())
     }
 }
 
 struct FrillsClientWorker {
     remote_stream: Option<Framed<TcpStream, FrillsCodec>>,
     client_receiver: Option<Receiver<FrillsClientTask>>,
-    worker_message_broadcast: broadcast::Sender<UnAckedFrillsMessage>,
+    worker_message_broadcast: Sender<UnAckedFrillsMessage>,
     shutdown: bool
 }
 
 impl FrillsClientWorker {
-    fn new(stream: Framed<TcpStream, FrillsCodec>, client_receiver: Receiver<FrillsClientTask>, worker_message_broadcast: broadcast::Sender<UnAckedFrillsMessage>) -> Self {
+    fn new(stream: Framed<TcpStream, FrillsCodec>, client_receiver: Receiver<FrillsClientTask>, worker_message_broadcast: Sender<UnAckedFrillsMessage>) -> Self {
         Self {
             remote_stream: Some(stream),
             client_receiver: Some(client_receiver),
@@ -127,17 +114,17 @@ impl FrillsClientWorker {
     async fn process_remote_message(&mut self, message: FrillsMessage) {
         match message {
             FrillsMessage::ServerToClient(FrillsServerToClient::PulledMessage { message, message_id}) => {
-                self.handle_pulled_message(message, message_id);
+                self.handle_pulled_message(message, message_id).await;
             },
             _ => {}
         }
     }
 
-    fn handle_pulled_message(&mut self, message: Vec<u8>, message_id: u32) {
+    async fn handle_pulled_message(&mut self, message: Vec<u8>, message_id: u32) {
         self.worker_message_broadcast.send(UnAckedFrillsMessage {
             message,
             message_id
-        });
+        }).await;
     }
 
     async fn process_client_message(&mut self, message: FrillsClientTask) {
@@ -156,6 +143,12 @@ impl FrillsClientWorker {
             }
             FrillsClientTask::PullMessage => {
                 self.pull_message().await;
+            },
+            FrillsClientTask::ACKMessage { message_id } => {
+                self.ack_message(message_id).await;
+            },
+            FrillsClientTask::NACKMessage { message_id } => {
+                self.nack_message(message_id).await;
             },
             _ => {}
         }
@@ -180,19 +173,59 @@ impl FrillsClientWorker {
     async fn pull_message(&mut self) {
         self.send_tcp(FrillsMessage::ClientToServer(FrillsClientToServer::PullMessage)).await;
     }
+
+    async fn ack_message(&mut self, message_id: u32) {
+        self.send_tcp(FrillsMessage::ClientToServer(FrillsClientToServer::ACKMessage { message_id })).await;
+    }
+
+    async fn nack_message(&mut self, message_id: u32) {
+        self.send_tcp(FrillsMessage::ClientToServer(FrillsClientToServer::NACKMessage { message_id })).await;
+    }
+}
+
+pub struct FrillsClientHandle {
+    worker_channel: Sender<FrillsClientTask>
+}
+
+impl FrillsClientHandle {
+    fn new(worker_channel: Sender<FrillsClientTask>) -> Self {
+        Self {
+            worker_channel
+        }
+    }
+
+    pub async fn register_topic(&mut self, topic: &str) {
+        self.worker_channel.send(FrillsClientTask::RegisterTopic { name: topic.to_string() }).await;
+    }
+
+    pub async fn subscribe_to_topic(&mut self, topic: &str) {
+        self.worker_channel.send(FrillsClientTask::SubscribeToTopic { name: topic.to_string() }).await;
+    }
+
+    pub async fn push_message(&mut self, topic: &str, message: Vec<u8>) {
+        self.worker_channel.send(FrillsClientTask::PushMessage { topic: topic.to_string(), message }).await;
+    }
+
+    pub async fn ack_message(&mut self, message_id: u32) {
+        self.worker_channel.send(FrillsClientTask::ACKMessage { message_id }).await;
+    }
+
+    pub async fn nack_message(&mut self, message_id: u32) {
+        self.worker_channel.send(FrillsClientTask::NACKMessage { message_id }).await;
+    }
 }
 
 #[pin_project]
 pub struct FrillsClientMessageStream {
     #[pin]
-    receiver: broadcast::Receiver<UnAckedFrillsMessage>,
+    receiver: Receiver<UnAckedFrillsMessage>,
     #[pin]
     sender: Sender<FrillsClientTask>,
     subscribed: bool
 }
 
 impl FrillsClientMessageStream {
-    fn new(sender: Sender<FrillsClientTask>, receiver: broadcast::Receiver<UnAckedFrillsMessage>) -> Self {
+    fn new(sender: Sender<FrillsClientTask>, receiver: Receiver<UnAckedFrillsMessage>) -> Self {
         Self {
             sender,
             receiver,
@@ -201,7 +234,7 @@ impl FrillsClientMessageStream {
     }
 }
 
-impl Stream for FrillsClientMessageStream {
+impl Stream for FrillsClient {
     type Item = UnAckedFrillsMessage;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -209,32 +242,37 @@ impl Stream for FrillsClientMessageStream {
 
         if !*projection.subscribed {
             // register interest
-            match projection.sender.poll_ready(cx) {
+            match projection.worker_channel.poll_ready(cx) {
                 Poll::Ready(Ok(_)) => {
-                    *projection.subscribed = true;
                     cx.waker().wake_by_ref();
 
-                    projection.sender.try_send(FrillsClientTask::PullMessage);
+                    match projection.worker_channel.try_send(FrillsClientTask::PullMessage) {
+                        Ok(_) => {
+                            *projection.subscribed = true;
+                        },
+                        _ => {}
+                    };
                 },
-                Poll::Ready(Err(_)) => {
+                Poll::Ready(Err(e)) => {
                     // we're done; worker is dead
-                    return Poll::Ready(None)
+                    println!("SENDER: {:?}", e);
+                    //return Poll::Ready(None);
                 },
                 Poll::Pending => { /* still trying to send to worker */ }
             }
         } else {
             // waiting on the value
-            match projection.receiver.poll_recv(cx) {
-                Poll::Ready(Ok(message)) => {
+            match projection.worker_broadcast_receiver.poll_recv(cx) {
+                Poll::Ready(Some(message)) => {
                     // we'll need to subscribe again to receive another message
                     *projection.subscribed = false;
                     cx.waker().wake_by_ref();
 
                     return Poll::Ready(Some(message));
                 },
-                Poll::Ready(Err(_)) => {
+                Poll::Ready(None) => {
                     // we're done; receiver is dead
-                    return Poll::Ready(None)
+                    //return Poll::Ready(None);
                 },
                 Poll::Pending => { /* waiting on message */ }
             }
@@ -258,7 +296,13 @@ enum FrillsClientTask {
         topic: String,
         message: Vec<u8>
     },
-    PullMessage
+    PullMessage,
+    ACKMessage {
+        message_id: u32
+    },
+    NACKMessage {
+        message_id: u32
+    }
 }
 
 #[derive(Clone)]

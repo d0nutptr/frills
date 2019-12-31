@@ -20,8 +20,8 @@ pub struct FrillsServer {
 
 impl FrillsServer {
     pub fn new(port: u16) -> Self {
-        let (connection_sender, connection_receiver) = channel(1);
-        let (client_thread_sender, client_thread_receiver) = channel(1);
+        let (connection_sender, connection_receiver) = channel(16);
+        let (client_thread_sender, client_thread_receiver) = channel(100_000);
 
         // spawn connection listener
         tokio::spawn(async move {
@@ -96,6 +96,12 @@ impl FrillsServer {
             ClientToMasterMessage::PullMessage { service, client } => {
                 self.pull_message(service, client).await;
             },
+            ClientToMasterMessage::ACK { service, message_id } => {
+                self.ack_message(service, message_id).await;
+            },
+            ClientToMasterMessage::NACK { service, message_id } => {
+                self.nack_message(service, message_id).await;
+            }
             _ => {}
         };
     }
@@ -155,6 +161,24 @@ impl FrillsServer {
             _ => {}
         }
     }
+
+    async fn ack_message(&mut self, service: String, message_id: u32) {
+        let service = match self.services.get_mut(&service) {
+            Some(service) => service,
+            _ => return
+        };
+
+        service.ack_message(message_id, false).await;
+    }
+
+    async fn nack_message(&mut self, service: String, message_id: u32) {
+        let service = match self.services.get_mut(&service) {
+            Some(service) => service,
+            _ => return
+        };
+
+        service.ack_message(message_id, true).await;
+    }
 }
 
 struct Topic {
@@ -184,7 +208,7 @@ impl Service {
     fn new() -> Self {
         Self {
             registered_clients: HashSet::new(),
-            unsatisfied_messages: Slab::with_capacity(1023),
+            unsatisfied_messages: Slab::with_capacity(10_000),
             enqueued_messages: VecDeque::new(),
             pending_clients: VecDeque::new()
         }
@@ -218,6 +242,20 @@ impl Service {
                 message_id: message_id as u32,
                 message: next_message.data
             }).await;
+        }
+    }
+
+    async fn ack_message(&mut self, message_id: u32, is_nack: bool) {
+        if !self.unsatisfied_messages.contains(message_id as usize) {
+            // message_id doesn't exist
+            return;
+        }
+
+        let message = self.unsatisfied_messages.remove(message_id as usize);
+
+        if is_nack {
+            // NACK; requeue
+            self.enqueue_message(message).await;
         }
     }
 }

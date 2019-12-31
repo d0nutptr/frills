@@ -23,7 +23,13 @@ pub enum FrillsClientToServer {
         topic: String,
         message: Vec<u8>
     },
-    PullMessage
+    PullMessage,
+    ACKMessage {
+        message_id: u32
+    },
+    NACKMessage {
+        message_id: u32
+    }
 }
 
 #[derive(Deserialize, Serialize)]

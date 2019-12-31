@@ -25,7 +25,7 @@ impl ClientThread {
         stream: TcpStream,
         sender: Sender<ClientToMasterMessage>
     ) -> Self {
-        let (message_sender, message_receiver) = channel(1);
+        let (message_sender, message_receiver) = channel(100_000);
 
         Self {
             stream: Some(Framed::new(stream, FrillsCodec {})),
@@ -60,6 +60,12 @@ impl ClientThread {
             }
             FrillsMessage::ClientToServer(FrillsClientToServer::PullMessage) => {
                 self.pull_message().await;
+            }
+            FrillsMessage::ClientToServer(FrillsClientToServer::ACKMessage { message_id }) => {
+                self.ack_message(message_id).await;
+            }
+            FrillsMessage::ClientToServer(FrillsClientToServer::NACKMessage { message_id }) => {
+                self.nack_message(message_id).await;
             }
             _ => {
                 println!("Other message type received!");
@@ -109,6 +115,24 @@ impl ClientThread {
         };
 
         self.master_sender.send(ClientToMasterMessage::PullMessage { service: service_name, client: self.message_sender.clone() }).await;
+    }
+
+    async fn ack_message(&mut self, message_id: u32) {
+        let service = match &self.service_name {
+            Some(name) => name.clone(),
+            _ => return
+        };
+
+        self.master_sender.send(ClientToMasterMessage::ACK { message_id, service }).await;
+    }
+
+    async fn nack_message(&mut self, message_id: u32) {
+        let service = match &self.service_name {
+            Some(name) => name.clone(),
+            _ => return
+        };
+
+        self.master_sender.send(ClientToMasterMessage::NACK { message_id, service }).await;
     }
 
     pub async fn perform_master_shutdown(&mut self) {

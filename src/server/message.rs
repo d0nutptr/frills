@@ -20,11 +20,13 @@ pub enum ClientToMasterMessage {
         service: String,
         client: Sender<NewMessage>
     },
-    Ack {
+    ACK {
         message_id: u32,
+        service: String
     },
-    Nack {
+    NACK {
         message_id: u32,
+        service: String
     },
     Disconnect,
     Shutdown,
