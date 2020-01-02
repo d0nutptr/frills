@@ -12,9 +12,9 @@ pub enum ClientToMasterMessage {
         service: String,
         topic: String,
     },
-    PushMessage {
+    PushMessages {
         topic: String,
-        message: Vec<u8>,
+        messages: Vec<Vec<u8>>,
     },
     PullMessages {
         service: String,

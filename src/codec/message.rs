@@ -13,7 +13,7 @@ pub enum FrillsClientToServer {
     RegisterTopic { name: String },
     RegisterAsService { name: String },
     SubscribeToTopic { topic_name: String },
-    PushMessage { topic: String, message: Vec<u8> },
+    PushMessages { topic: String, messages: Vec<Vec<u8>> },
     PullMessages { count: u32 },
     ACKMessage { message_id: u32 },
     ACKMessageSet { message_ids: Vec<u32> },

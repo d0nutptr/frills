@@ -52,6 +52,7 @@ impl FrillsClientWorker {
             for client_message in client_messages {
                 self.process_client_message(client_message).await;
             }
+
         }
     }
 
@@ -94,8 +95,8 @@ impl FrillsClientWorker {
             FrillsClientTask::SubscribeToTopic { name } => {
                 self.subscribe_to_topic(name).await;
             }
-            FrillsClientTask::PushMessage { topic, message } => {
-                self.push_message(topic, message).await;
+            FrillsClientTask::PushMessages { topic, messages } => {
+                self.push_messages(topic, messages).await;
             }
             FrillsClientTask::PullMessages { count } => {
                 self.pull_messages(count).await;
@@ -137,9 +138,9 @@ impl FrillsClientWorker {
         .await;
     }
 
-    async fn push_message(&mut self, topic: String, message: Vec<u8>) {
+    async fn push_messages(&mut self, topic: String, messages: Vec<Vec<u8>>) {
         self.send_tcp(FrillsMessage::ClientToServer(
-            FrillsClientToServer::PushMessage { topic, message },
+            FrillsClientToServer::PushMessages { topic, messages },
         ))
         .await;
     }
@@ -184,7 +185,7 @@ pub(crate) enum FrillsClientTask {
     RegisterService { name: String },
     RegisterTopic { name: String },
     SubscribeToTopic { name: String },
-    PushMessage { topic: String, message: Vec<u8> },
+    PushMessages { topic: String, messages: Vec<Vec<u8>> },
     PullMessages { count: u32 },
     ACKMessage { message_id: u32 },
     ACKMessageSet { message_ids: Vec<u32> },

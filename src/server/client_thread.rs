@@ -56,8 +56,8 @@ impl ClientThread {
             }) => {
                 self.subscribe_to_topic(topic_name).await;
             }
-            FrillsMessage::ClientToServer(FrillsClientToServer::PushMessage { topic, message }) => {
-                self.push_message(topic, message).await;
+            FrillsMessage::ClientToServer(FrillsClientToServer::PushMessages { topic, messages }) => {
+                self.push_messages(topic, messages).await;
             }
             FrillsMessage::ClientToServer(FrillsClientToServer::PullMessages { count }) => {
                 self.pull_messages(count).await;
@@ -114,11 +114,11 @@ impl ClientThread {
         }
     }
 
-    async fn push_message(&mut self, topic: String, data: Vec<u8>) {
+    async fn push_messages(&mut self, topic: String, messages: Vec<Vec<u8>>) {
         self.master_sender
-            .send(ClientToMasterMessage::PushMessage {
+            .send(ClientToMasterMessage::PushMessages {
                 topic,
-                message: data,
+                messages,
             })
             .await;
     }

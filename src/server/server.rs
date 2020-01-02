@@ -95,8 +95,8 @@ impl FrillsServer {
             ClientToMasterMessage::SubscribeServiceToTopic { topic, service } => {
                 self.subscribe_service_to_topic(topic, service);
             }
-            ClientToMasterMessage::PushMessage { topic, message } => {
-                self.new_message(topic, message).await;
+            ClientToMasterMessage::PushMessages { topic, messages } => {
+                self.push_messages(topic, messages).await;
             }
             ClientToMasterMessage::PullMessages {
                 service,
@@ -148,11 +148,19 @@ impl FrillsServer {
         }
     }
 
-    async fn new_message(&mut self, topic: String, message: Vec<u8>) {
+    async fn push_messages(&mut self, topic: String, messages: Vec<Vec<u8>>) {
         let services: Vec<&String> = match self.topics.get(&topic) {
             Some(topic) => topic.registered_services.iter().collect(),
             _ => return,
         };
+
+        let mapped_messages: Vec<Message> = messages.into_iter()
+            .map(|message| {
+                Message {
+                    data: message.clone(),
+                }
+            })
+            .collect();
 
         for service_name in services {
             let service = match self.services.get_mut(service_name) {
@@ -160,18 +168,14 @@ impl FrillsServer {
                 _ => continue,
             };
 
-            service
-                .enqueue_message(Message {
-                    data: message.clone(),
-                })
-                .await;
+            service.enqueue_messages(mapped_messages.clone()).await;
         }
     }
 
     async fn pull_message(&mut self, service: String, client: Sender<NewMessages>, count: u32) {
         match self.services.get_mut(&service) {
             Some(service) => {
-                service.pull_next_messages(client, count).await;
+                service.pull_messages(client, count).await;
             }
             _ => {}
         }
@@ -216,7 +220,6 @@ struct Service {
     registered_clients: HashSet<u32>,
     unsatisfied_messages: Slab<Message>,
     enqueued_messages: VecDeque<Message>,
-    pending_clients: VecDeque<Sender<NewMessages>>,
 }
 
 impl Service {
@@ -225,7 +228,6 @@ impl Service {
             registered_clients: HashSet::new(),
             unsatisfied_messages: Slab::with_capacity(10_000),
             enqueued_messages: VecDeque::new(),
-            pending_clients: VecDeque::new(),
         }
     }
 
@@ -233,27 +235,11 @@ impl Service {
         self.registered_clients.insert(client_id);
     }
 
-    async fn enqueue_message(&mut self, message: Message) {
-        if !self.pending_clients.is_empty() {
-            let message_id = self.unsatisfied_messages.insert(message.clone());
-            let mut client = self.pending_clients.pop_front().unwrap();
-
-            tokio::spawn(async move {
-                client
-                    .send(NewMessages {
-                        messages: vec![NewMessage {
-                            message_id: message_id as u32,
-                            message: message.data,
-                        }],
-                    })
-                    .await
-            });
-        } else {
-            self.enqueued_messages.push_back(message);
-        }
+    async fn enqueue_messages(&mut self, messages: Vec<Message>) {
+        self.enqueued_messages.extend(messages);
     }
 
-    async fn pull_next_messages(&mut self, mut client: Sender<NewMessages>, count: u32) {
+    async fn pull_messages(&mut self, mut client: Sender<NewMessages>, count: u32) {
         if self.enqueued_messages.is_empty() {
             tokio::spawn(async move {
                 client.send(NewMessages { messages: vec![] }).await;
@@ -289,7 +275,7 @@ impl Service {
 
         if is_nack {
             // NACK; requeue
-            self.enqueue_message(message).await;
+            self.enqueue_messages(vec![message]).await;
         }
     }
 }

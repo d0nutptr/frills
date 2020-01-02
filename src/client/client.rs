@@ -12,6 +12,7 @@ use std::pin::Pin;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio_util::codec::Framed;
+use std::str::FromStr;
 
 #[pin_project]
 pub struct FrillsClient {
@@ -20,12 +21,21 @@ pub struct FrillsClient {
     worker_broadcast_sender: Sender<UnAckedFrillsMessage>,
     #[pin]
     worker_broadcast_receiver: Receiver<UnAckedFrillsMessage>,
-    subscribed: bool,
     message_queue: Vec<UnAckedFrillsMessage>,
+    subscribed: bool,
+    cache_size: u16
 }
 
 impl FrillsClient {
-    pub async fn new(service_name: &str, remote: SocketAddr) -> Option<Self> {
+    pub fn builder(service_name: &str) -> Builder {
+        Builder::new(service_name)
+    }
+
+    async fn new(config: FrillsClientConfig) -> Option<Self> {
+        let remote = config.remote;
+        let cache_size = config.cache_size;
+        let service_name = config.service_name;
+
         let mut remote_stream = match TcpStream::connect(remote).await {
             Ok(stream) => Framed::new(stream, FrillsCodec {}),
             _ => return None,
@@ -55,6 +65,7 @@ impl FrillsClient {
             worker_broadcast_receiver,
             subscribed: false,
             message_queue: Vec::new(),
+            cache_size
         };
 
         Some(new_client)
@@ -63,6 +74,12 @@ impl FrillsClient {
     pub fn get_client_handle(&self) -> FrillsClientHandle {
         FrillsClientHandle::new(self.worker_channel.clone())
     }
+}
+
+#[derive(Clone)]
+pub struct UnAckedFrillsMessage {
+    pub message: Vec<u8>,
+    pub message_id: u32,
 }
 
 pub struct FrillsClientHandle {
@@ -90,11 +107,11 @@ impl FrillsClientHandle {
             .await;
     }
 
-    pub async fn push_message(&mut self, topic: &str, message: Vec<u8>) {
+    pub async fn push_messages(&mut self, topic: &str, messages: Vec<Vec<u8>>) {
         self.worker_channel
-            .send(FrillsClientTask::PushMessage {
+            .send(FrillsClientTask::PushMessages {
                 topic: topic.to_string(),
-                message,
+                messages,
             })
             .await;
     }
@@ -147,6 +164,7 @@ impl Stream for FrillsClient {
     type Item = UnAckedFrillsMessage;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let cache_size = self.cache_size as u32;
         let mut projection = self.project();
 
         if projection.message_queue.is_empty() {
@@ -154,13 +172,13 @@ impl Stream for FrillsClient {
                 // register interest
                 match projection.worker_channel.poll_ready(cx) {
                     Poll::Ready(Ok(_)) => {
-                        cx.waker().wake_by_ref();
 
                         match projection
                             .worker_channel
-                            .try_send(FrillsClientTask::PullMessages { count: 32 })
+                            .try_send(FrillsClientTask::PullMessages { count: cache_size })
                         {
                             Ok(_) => {
+                                cx.waker().wake_by_ref();
                                 *projection.subscribed = true;
                             }
                             _ => {}
@@ -179,12 +197,14 @@ impl Stream for FrillsClient {
                     match projection.worker_broadcast_receiver.poll_recv(cx) {
                         Poll::Ready(Some(message)) => {
                             projection.message_queue.push(message);
-                        }
+                        },
+                        Poll::Ready(None) => {
+                            *projection.subscribed = false;
+                        },
                         _ => {
                             // we're done; receiver is dead
                             //return Poll::Ready(None);
                             *projection.subscribed = false;
-                            cx.waker().wake_by_ref();
                             break;
                         }
                     }
@@ -198,8 +218,55 @@ impl Stream for FrillsClient {
     }
 }
 
-#[derive(Clone)]
-pub struct UnAckedFrillsMessage {
-    pub message: Vec<u8>,
-    pub message_id: u32,
+pub struct Builder {
+    config: FrillsClientConfig
+}
+
+impl Builder {
+    fn new(service_name: &str) -> Self {
+        let config = FrillsClientConfig {
+            service_name: service_name.to_string(),
+            ..Default::default()
+        };
+
+        Self {
+            config
+        }
+    }
+
+    pub fn cache_size(mut self, cache_size: u16) -> Self {
+        self.config.cache_size = cache_size;
+        self
+    }
+
+    pub fn remote(mut self, remote: SocketAddr) -> Self {
+        self.config.remote = remote;
+        self
+    }
+
+    /// Panics if `remote` is not a valid SocketAddr
+    pub fn remote_from_str(mut self, remote: &str) -> Self {
+        self.config.remote = SocketAddr::from_str(remote).unwrap();
+        self
+    }
+
+    pub async fn build(self) -> Option<FrillsClient> {
+        FrillsClient::new(self.config).await
+    }
+}
+
+pub struct FrillsClientConfig {
+    service_name: String,
+    cache_size: u16,
+    remote: SocketAddr
+}
+
+impl Default for FrillsClientConfig {
+    fn default() -> Self {
+        Self {
+            service_name: "ClientService".to_string(),
+            cache_size: 16,
+            remote: SocketAddr::from_str("127.0.0.1:0").unwrap()
+        }
+    }
 }
