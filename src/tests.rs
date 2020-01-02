@@ -194,7 +194,6 @@ fn puppy_test() {
 
             let mut dog_client = FrillsClient::builder("DogClient")
                 .remote_from_str("127.0.0.1:12345")
-                .cache_size(3)
                 .build().await
                 .unwrap();
             let mut dog_handle = dog_client.get_client_handle();
@@ -207,7 +206,8 @@ fn puppy_test() {
             tokio::time::delay_for(Duration::from_millis(250)).await;
 
             // let's push out some dog names
-            let dog_names = vec!["fido", "rufus", "taiko"];
+            let dog_names = vec!["fido", "rufus", "taiko", "rover"];
+
             dog_handle.push_messages("DogNames", dog_names.into_iter().map(|name| name.as_bytes().to_vec()).collect()).await;
 
             // damned async closures don't work yet; gotta use `while let`
@@ -234,7 +234,6 @@ fn puppy_test() {
 
             let mut puppy_client = FrillsClient::builder("l33tPuppyClient")
                 .remote_from_str("127.0.0.1:12345")
-                .cache_size(3)
                 .build().await
                 .unwrap();
             let mut puppy_handle = puppy_client.get_client_handle();
@@ -242,7 +241,6 @@ fn puppy_test() {
             puppy_handle.register_topic("DogNames").await;
             puppy_handle.register_topic("l33tPuppyNames").await;
             puppy_handle.subscribe_to_topic("DogNames").await;
-
 
             // to ensure all of the topics are registered properly
             tokio::time::delay_for(Duration::from_millis(250)).await;
