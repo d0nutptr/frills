@@ -15,7 +15,7 @@ A list of some features that are missing (currently):
 7. Event order guarantees
 8. _and many more!!1!_
 
-This thing has some issues too! For example, if no messages are transmitted, the clients frantically call out into the void asking for more messages (and the server responds with an empty message set..). It's not hard to fix, I'm just lazy and haven't done it yet. 
+This thing has some issues too! For example, if no messages are transmitted, the clients frantically call out into the void asking for more messages (and the server responds with an empty message set..) which causes some high cpu usage. It's not hard to fix, I'm just lazy and haven't done it yet. Basically, I'd un-fuck the server code that I messed up while debugging an issue where I axe'd the whole "Pending Clients" idea which would allow clients to ask for a message and then CHILL-OUT until a message finally hit the queue. 
 
 ## Example
 `server.rs - 1.2.3.4`
