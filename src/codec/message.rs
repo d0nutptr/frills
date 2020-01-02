@@ -15,10 +15,8 @@ pub enum FrillsClientToServer {
     SubscribeToTopic { topic_name: String },
     PushMessages { topic: String, messages: Vec<Vec<u8>> },
     PullMessages { count: u32 },
-    ACKMessage { message_id: u32 },
-    ACKMessageSet { message_ids: Vec<u32> },
-    NACKMessage { message_id: u32 },
-    NACKMessageSet { message_ids: Vec<u32> },
+    ACKMessage { message_ids: Vec<u32> },
+    NACKMessage { message_ids: Vec<u32> },
 }
 
 #[derive(Deserialize, Serialize)]

@@ -12,38 +12,6 @@ use tokio::prelude::*;
 use tokio_util::codec::Framed;
 
 #[test]
-fn bincode() {
-    let data = ExampleNestedStructure {
-        version: 123,
-        value: InternalValue {
-            value: r#"{"msg": "Some Fake Data"}"#.to_string(),
-        },
-    };
-
-    let mut result = match bincode::serialize(&data) {
-        Ok(result) => result,
-        Err(e) => {
-            assert!(false, e);
-            return;
-        }
-    };
-
-    result.push(12u8);
-    result.push(34u8);
-
-    let restructured: ExampleNestedStructure = match bincode::deserialize(&result) {
-        Ok(output) => output,
-        Err(e) => {
-            assert!(false, e);
-            return;
-        }
-    };
-
-    assert_eq!(restructured.version, data.version);
-    assert_eq!(restructured.value.value, data.value.value);
-}
-
-#[test]
 fn test_connect_disconnect() {
     let mut runtime = tokio::runtime::Runtime::new().unwrap();
 
@@ -97,9 +65,9 @@ fn test_nack_requeue() {
                 .build().await
                 .unwrap();
 
-            let mut ack_client = FrillsClient::builder("NACK&ACK")
+            let mut ack_client = FrillsClient::builder("AlwaysACK")
                 .remote_from_str("127.0.0.1:12345")
-                .cache_size(16)
+                .cache_size(25000)
                 .build().await
                 .unwrap();
 
@@ -108,70 +76,53 @@ fn test_nack_requeue() {
 
             let topic = "DataStream";
 
-            ack_client_handle.register_topic(topic).await;
+            producer_handle.register_topic(topic).await;
             ack_client_handle.subscribe_to_topic(topic).await;
 
             // wait a bit to ensure topic was registered
             tokio::time::delay_for(Duration::from_millis(250)).await;
 
             // push some messages into queue
-            let messages: Vec<Vec<u8>> = (0 .. 1_000_000u32).map(|i| format!("{}", i).into_bytes()).collect();
+            let messages: Vec<Vec<u8>> = (0 .. 4_000_000u32).map(|i| format!("{}", i).into_bytes()).collect();
 
             producer_handle
                 .push_messages(topic, messages)
                 .await;
 
+            tokio::time::delay_for(Duration::from_millis(3000)).await;
+
             println!("Starting fetch..");
 
             tokio::spawn(async move {
                 let start = SystemTime::now();
-                let mut counter = 5u8;
-                let mut message_count = 0u32;
-                loop {
-                    let mut data = Vec::new();
 
-                    for i in 0..10000u32 {
-                        let message = match tokio::time::timeout(
-                            Duration::from_millis(100),
-                            ack_client.next(),
-                        )
-                        .await
-                        {
-                            Ok(Some(message)) => message,
-                            _ => break,
-                        };
+                run_ack_client("AlwaysACK", 8192, "127.0.0.1:12345", topic.clone()).await;
 
-                        data.push(message);
-                    }
+                println!("TIME(1): {}", SystemTime::now().duration_since(start).unwrap().as_millis());
+            });
 
-                    println!(
-                        "ACK - {} ({})",
-                        data.len(),
-                        data.last()
-                            .unwrap_or(&UnAckedFrillsMessage {
-                                message_id: 999,
-                                message: vec![69]
-                            })
-                            .message[0]
-                    );
+            tokio::spawn(async move {
+                let start = SystemTime::now();
 
-                    message_count += data.len() as u32;
+                run_ack_client("AlwaysACK", 8192, "127.0.0.1:12345", topic.clone()).await;
 
-                    if data.is_empty() {
-                        counter -= 1;
-                    }
+                println!("TIME(2): {}", SystemTime::now().duration_since(start).unwrap().as_millis());
+            });
 
-                    //ack_client_handle.ack_message_set(data.into_iter().map(|message| message.message_id).collect()).await;
+            tokio::spawn(async move {
+                let start = SystemTime::now();
 
-                    if counter == 0 {
-                        break;
-                    }
-                }
-                println!(
-                    "TIME: {}",
-                    SystemTime::now().duration_since(start).unwrap().as_millis()
-                );
-                println!("TOTAL: {}", message_count);
+                run_ack_client("AlwaysACK", 8192, "127.0.0.1:12345", topic.clone()).await;
+
+                println!("TIME(3): {}", SystemTime::now().duration_since(start).unwrap().as_millis());
+            });
+
+            tokio::spawn(async move {
+                let start = SystemTime::now();
+
+                run_ack_client("AlwaysACK", 8192, "127.0.0.1:12345", topic.clone()).await;
+
+                println!("TIME(4): {}", SystemTime::now().duration_since(start).unwrap().as_millis());
             });
         });
 
@@ -180,13 +131,49 @@ fn test_nack_requeue() {
     });
 }
 
-#[derive(Serialize, Deserialize)]
-struct ExampleNestedStructure {
-    pub version: u32,
-    pub value: InternalValue,
-}
+async fn run_ack_client(service_name: &str, cache_size: u16, remote: &str, topic: &str) {
+    let mut ack_client = FrillsClient::builder(service_name)
+        .cache_size(cache_size)
+        .remote_from_str(remote)
+        .build().await
+        .unwrap();
 
-#[derive(Serialize, Deserialize)]
-struct InternalValue {
-    pub value: String,
+    let mut ack_client_handle = ack_client.get_client_handle();
+    ack_client_handle.subscribe_to_topic(topic).await;
+
+    let mut message_count = 0u32;
+
+    loop {
+        let mut data = Vec::new();
+
+        for _ in 0..10_000u32 {
+            let message = match tokio::time::timeout(
+                Duration::from_millis(250),
+                ack_client.next(),
+            ).await {
+                Ok(Some(message)) => message,
+                _ => break,
+            };
+
+            data.push(message);
+        }
+
+        ack_client_handle.ack_message(data.iter().map(|message| message.message_id).collect()).await;
+
+        println!(
+            "ACK - {} ({})",
+            data.len(),
+            data.last()
+                .unwrap_or(&UnAckedFrillsMessage {
+                    message_id: 999,
+                    message: vec![69]
+                })
+                .message[0]
+        );
+
+        message_count += data.len() as u32;
+
+        if data.len() < 10_000 { break }
+    }
+    println!("TOTAL: {}", message_count);
 }

@@ -62,11 +62,11 @@ impl ClientThread {
             FrillsMessage::ClientToServer(FrillsClientToServer::PullMessages { count }) => {
                 self.pull_messages(count).await;
             }
-            FrillsMessage::ClientToServer(FrillsClientToServer::ACKMessage { message_id }) => {
-                self.ack_message(message_id).await;
+            FrillsMessage::ClientToServer(FrillsClientToServer::ACKMessage { message_ids }) => {
+                self.ack_messages(message_ids).await;
             }
-            FrillsMessage::ClientToServer(FrillsClientToServer::NACKMessage { message_id }) => {
-                self.nack_message(message_id).await;
+            FrillsMessage::ClientToServer(FrillsClientToServer::NACKMessage { message_ids }) => {
+                self.nack_messages(message_ids).await;
             }
             _ => {
                 println!("Other message type received!");
@@ -138,7 +138,7 @@ impl ClientThread {
             .await;
     }
 
-    async fn ack_message(&mut self, message_id: u32) {
+    async fn ack_messages(&mut self, message_ids: Vec<u32>) {
         let service = match &self.service_name {
             Some(name) => name.clone(),
             _ => return,
@@ -146,13 +146,13 @@ impl ClientThread {
 
         self.master_sender
             .send(ClientToMasterMessage::ACK {
-                message_id,
+                message_ids,
                 service,
             })
             .await;
     }
 
-    async fn nack_message(&mut self, message_id: u32) {
+    async fn nack_messages(&mut self, message_ids: Vec<u32>) {
         let service = match &self.service_name {
             Some(name) => name.clone(),
             _ => return,
@@ -160,7 +160,7 @@ impl ClientThread {
 
         self.master_sender
             .send(ClientToMasterMessage::NACK {
-                message_id,
+                message_ids,
                 service,
             })
             .await;

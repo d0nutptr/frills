@@ -107,15 +107,15 @@ impl FrillsServer {
             }
             ClientToMasterMessage::ACK {
                 service,
-                message_id,
+                message_ids,
             } => {
-                self.ack_message(service, message_id).await;
+                self.ack_messages(service, message_ids).await;
             }
             ClientToMasterMessage::NACK {
                 service,
-                message_id,
+                message_ids,
             } => {
-                self.nack_message(service, message_id).await;
+                self.nack_messages(service, message_ids).await;
             }
             _ => {}
         };
@@ -181,22 +181,22 @@ impl FrillsServer {
         }
     }
 
-    async fn ack_message(&mut self, service: String, message_id: u32) {
+    async fn ack_messages(&mut self, service: String, message_ids: Vec<u32>) {
         let service = match self.services.get_mut(&service) {
             Some(service) => service,
             _ => return,
         };
 
-        service.ack_message(message_id, false).await;
+        service.ack_messages(message_ids, false).await;
     }
 
-    async fn nack_message(&mut self, service: String, message_id: u32) {
+    async fn nack_messages(&mut self, service: String, message_ids: Vec<u32>) {
         let service = match self.services.get_mut(&service) {
             Some(service) => service,
             _ => return,
         };
 
-        service.ack_message(message_id, true).await;
+        service.ack_messages(message_ids, true).await;
     }
 }
 
@@ -265,17 +265,19 @@ impl Service {
         }
     }
 
-    async fn ack_message(&mut self, message_id: u32, is_nack: bool) {
-        if !self.unsatisfied_messages.contains(message_id as usize) {
-            // message_id doesn't exist
-            return;
-        }
+    async fn ack_messages(&mut self, message_ids: Vec<u32>, is_nack: bool) {
+        let valid_ids: Vec<usize> = message_ids.into_iter()
+            .map(|id| id as usize)
+            .filter(|id| self.unsatisfied_messages.contains(*id))
+            .collect();
 
-        let message = self.unsatisfied_messages.remove(message_id as usize);
+        let pending_messages: Vec<Message> = valid_ids.into_iter()
+            .map(|id| self.unsatisfied_messages.remove(id))
+            .collect();
 
         if is_nack {
             // NACK; requeue
-            self.enqueue_messages(vec![message]).await;
+            self.enqueue_messages(pending_messages).await;
         }
     }
 }

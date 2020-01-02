@@ -10,7 +10,7 @@ use tokio_util::codec::Framed;
 pub(crate) struct FrillsClientWorker {
     remote_stream: Option<Framed<TcpStream, FrillsCodec>>,
     client_receiver: Option<Receiver<FrillsClientTask>>,
-    worker_message_broadcast: Sender<UnAckedFrillsMessage>,
+    worker_message_broadcast: Sender<Vec<UnAckedFrillsMessage>>,
     shutdown: bool,
 }
 
@@ -18,7 +18,7 @@ impl FrillsClientWorker {
     pub(crate) fn new(
         stream: Framed<TcpStream, FrillsCodec>,
         client_receiver: Receiver<FrillsClientTask>,
-        worker_message_broadcast: Sender<UnAckedFrillsMessage>,
+        worker_message_broadcast: Sender<Vec<UnAckedFrillsMessage>>,
     ) -> Self {
         Self {
             remote_stream: Some(stream),
@@ -67,20 +67,23 @@ impl FrillsClientWorker {
     async fn process_remote_message(&mut self, message: FrillsMessage) {
         match message {
             FrillsMessage::ServerToClient(FrillsServerToClient::PulledMessages { messages }) => {
-                for (message, message_id) in messages {
-                    self.handle_pulled_message(message, message_id).await;
-                }
+                self.handle_pulled_message(messages).await;
             }
             _ => {}
         }
     }
 
-    async fn handle_pulled_message(&mut self, message: Vec<u8>, message_id: u32) {
+    async fn handle_pulled_message(&mut self, messages: Vec<(Vec<u8>, u32)>) {
+        let new_messages = messages.into_iter()
+            .map(|(message, message_id)|{
+                UnAckedFrillsMessage {
+                    message,
+                    message_id
+                }
+            }).collect();
+
         self.worker_message_broadcast
-            .send(UnAckedFrillsMessage {
-                message,
-                message_id,
-            })
+            .send(new_messages)
             .await;
     }
 
@@ -101,17 +104,11 @@ impl FrillsClientWorker {
             FrillsClientTask::PullMessages { count } => {
                 self.pull_messages(count).await;
             }
-            FrillsClientTask::ACKMessage { message_id } => {
-                self.ack_message(message_id).await;
+            FrillsClientTask::ACKMessages { message_ids } => {
+                self.ack_messages(message_ids).await;
             }
-            FrillsClientTask::ACKMessageSet { message_ids } => {
-                self.ack_message_set(message_ids).await;
-            }
-            FrillsClientTask::NACKMessage { message_id } => {
-                self.nack_message(message_id).await;
-            }
-            FrillsClientTask::NACKMessageSet { message_ids } => {
-                self.nack_message_set(message_ids).await;
+            FrillsClientTask::NACKMessages { message_ids } => {
+                self.nack_messages(message_ids).await;
             }
             _ => {}
         }
@@ -152,30 +149,16 @@ impl FrillsClientWorker {
         .await;
     }
 
-    async fn ack_message(&mut self, message_id: u32) {
+    async fn ack_messages(&mut self, message_ids: Vec<u32>) {
         self.send_tcp(FrillsMessage::ClientToServer(
-            FrillsClientToServer::ACKMessage { message_id },
+            FrillsClientToServer::ACKMessage { message_ids },
         ))
         .await;
     }
 
-    async fn ack_message_set(&mut self, message_ids: Vec<u32>) {
+    async fn nack_messages(&mut self, message_ids: Vec<u32>) {
         self.send_tcp(FrillsMessage::ClientToServer(
-            FrillsClientToServer::ACKMessageSet { message_ids },
-        ))
-        .await
-    }
-
-    async fn nack_message(&mut self, message_id: u32) {
-        self.send_tcp(FrillsMessage::ClientToServer(
-            FrillsClientToServer::NACKMessage { message_id },
-        ))
-        .await;
-    }
-
-    async fn nack_message_set(&mut self, message_ids: Vec<u32>) {
-        self.send_tcp(FrillsMessage::ClientToServer(
-            FrillsClientToServer::NACKMessageSet { message_ids },
+            FrillsClientToServer::NACKMessage { message_ids },
         ))
         .await;
     }
@@ -187,8 +170,6 @@ pub(crate) enum FrillsClientTask {
     SubscribeToTopic { name: String },
     PushMessages { topic: String, messages: Vec<Vec<u8>> },
     PullMessages { count: u32 },
-    ACKMessage { message_id: u32 },
-    ACKMessageSet { message_ids: Vec<u32> },
-    NACKMessage { message_id: u32 },
-    NACKMessageSet { message_ids: Vec<u32> },
+    ACKMessages { message_ids: Vec<u32>},
+    NACKMessages { message_ids: Vec<u32>},
 }

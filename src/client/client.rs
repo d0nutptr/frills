@@ -18,9 +18,9 @@ use std::str::FromStr;
 pub struct FrillsClient {
     service_name: String,
     worker_channel: Sender<FrillsClientTask>,
-    worker_broadcast_sender: Sender<UnAckedFrillsMessage>,
+    worker_broadcast_sender: Sender<Vec<UnAckedFrillsMessage>>,
     #[pin]
-    worker_broadcast_receiver: Receiver<UnAckedFrillsMessage>,
+    worker_broadcast_receiver: Receiver<Vec<UnAckedFrillsMessage>>,
     message_queue: Vec<UnAckedFrillsMessage>,
     subscribed: bool,
     cache_size: u16
@@ -41,8 +41,8 @@ impl FrillsClient {
             _ => return None,
         };
 
-        let (mut client_sender, client_receiver) = channel(1024);
-        let (worker_broadcast_sender, worker_broadcast_receiver) = channel(1024);
+        let (mut client_sender, client_receiver) = channel(16);
+        let (worker_broadcast_sender, worker_broadcast_receiver) = channel(16);
 
         let cloned_worker_sender = worker_broadcast_sender.clone();
 
@@ -116,27 +116,15 @@ impl FrillsClientHandle {
             .await;
     }
 
-    pub async fn ack_message(&mut self, message_id: u32) {
+    pub async fn ack_message(&mut self, message_ids: Vec<u32>) {
         self.worker_channel
-            .send(FrillsClientTask::ACKMessage { message_id })
+            .send(FrillsClientTask::ACKMessages { message_ids })
             .await;
     }
 
-    pub async fn ack_message_set(&mut self, message_ids: Vec<u32>) {
+    pub async fn nack_message(&mut self, message_ids: Vec<u32>) {
         self.worker_channel
-            .send(FrillsClientTask::ACKMessageSet { message_ids })
-            .await;
-    }
-
-    pub async fn nack_message(&mut self, message_id: u32) {
-        self.worker_channel
-            .send(FrillsClientTask::NACKMessage { message_id })
-            .await;
-    }
-
-    pub async fn nack_message_set(&mut self, message_ids: Vec<u32>) {
-        self.worker_channel
-            .send(FrillsClientTask::NACKMessageSet { message_ids })
+            .send(FrillsClientTask::NACKMessages { message_ids })
             .await;
     }
 }
@@ -193,21 +181,17 @@ impl Stream for FrillsClient {
                 }
             } else {
                 // waiting on the value
-                loop {
-                    match projection.worker_broadcast_receiver.poll_recv(cx) {
-                        Poll::Ready(Some(message)) => {
-                            projection.message_queue.push(message);
-                        },
-                        Poll::Ready(None) => {
-                            *projection.subscribed = false;
-                        },
-                        _ => {
-                            // we're done; receiver is dead
-                            //return Poll::Ready(None);
-                            *projection.subscribed = false;
-                            break;
-                        }
-                    }
+                match projection.worker_broadcast_receiver.poll_recv(cx) {
+                    Poll::Ready(Some(messages)) => {
+                        projection.message_queue.extend(messages);
+                        *projection.subscribed = false;
+                        cx.waker().wake_by_ref();
+                    },
+                    Poll::Ready(None) => {
+                        *projection.subscribed = false;
+                        cx.waker().wake_by_ref();
+                    },
+                    _ => {}
                 }
             }
 

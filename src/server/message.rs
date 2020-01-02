@@ -22,11 +22,11 @@ pub enum ClientToMasterMessage {
         count: u32,
     },
     ACK {
-        message_id: u32,
+        message_ids: Vec<u32>,
         service: String,
     },
     NACK {
-        message_id: u32,
+        message_ids: Vec<u32>,
         service: String,
     },
     Disconnect,
