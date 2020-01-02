@@ -1,10 +1,10 @@
 use crate::client::worker::{FrillsClientTask, FrillsClientWorker};
 use crate::codec::{FrillsClientToServer, FrillsCodec, FrillsMessage, FrillsServerToClient};
-use crate::tokio::stream::StreamExt;
 use crate::utils::next_either;
 use futures::future::Either;
 use futures::task::{Context, Poll};
 use futures::Stream;
+use futures_util::stream::StreamExt;
 use futures_util::sink::SinkExt;
 use pin_project::pin_project;
 use std::net::SocketAddr;
