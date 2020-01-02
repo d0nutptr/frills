@@ -94,3 +94,5 @@ async fn main() {
   }
 }
 ```
+
+The above example code is available as a test case in `tests.rs` by running `cargo test test_puppy -- --nocapture`
