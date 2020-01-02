@@ -102,3 +102,15 @@ async fn main() {
 ```
 
 The above example code is available as a test case in `tests.rs` by running `cargo test test_puppy -- --nocapture`
+
+## How does routing work?
+`frills` takes a very opinionated approach to message routing.
+
+1. Clients register as a **Service** to `frills`
+  * Multiple instances can register as the same **Service**. This will distribute the load of that **Service**'s queue among all instances opf that **Service**
+2. **Services** subscribe to **Topics**
+  * **Services** can subscribe to more than one **Topic**. When a **Service** asks for a message, it will be given a collection of messages from all **Topics** 
+3. **Messages** are pushed to **Topics**
+  * **Messages** are distributed to all **Service** queues subscribed to a topic.
+    * If **Service** "S1" and "S2" are subscribed to **Topic** "MyTopic", then a copy of any message that goes to "MyTopic" will go into the queue for both "S1" and "S2".
+    * If there are two instances of a **Service** ("C1" and "C2") that ask for a message, the first client to ask will get the next message in the **Service** queue they are a member of.
