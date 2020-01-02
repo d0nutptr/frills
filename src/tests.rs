@@ -10,6 +10,8 @@ use std::time::{Duration, SystemTime};
 use tokio::net::TcpStream;
 use tokio::prelude::*;
 use tokio_util::codec::Framed;
+use tokio::runtime::Runtime;
+use serde::de::value::StringDeserializer;
 
 #[test]
 fn test_connect_disconnect() {
@@ -83,13 +85,14 @@ fn test_nack_requeue() {
             tokio::time::delay_for(Duration::from_millis(250)).await;
 
             // push some messages into queue
-            let messages: Vec<Vec<u8>> = (0 .. 4_000_000u32).map(|i| format!("{}", i).into_bytes()).collect();
+            let messages: Vec<Vec<u8>> = (0 .. 1_000_000u32).map(|i| format!("{}", i).into_bytes()).collect();
 
             producer_handle
                 .push_messages(topic, messages)
                 .await;
 
-            tokio::time::delay_for(Duration::from_millis(3000)).await;
+            // Waiting for the messages to be pushed up
+            tokio::time::delay_for(Duration::from_millis(2000)).await;
 
             println!("Starting fetch..");
 
@@ -176,4 +179,97 @@ async fn run_ack_client(service_name: &str, cache_size: u16, remote: &str, topic
         if data.len() < 10_000 { break }
     }
     println!("TOTAL: {}", message_count);
+}
+
+#[test]
+fn puppy_test() {
+    let mut runtime = Runtime::new().unwrap();;
+
+    runtime.block_on(async {
+        let mut server = FrillsServer::new(12345);
+
+        tokio::spawn(async {
+            // give the server some time to start
+            tokio::time::delay_for(Duration::from_millis(250)).await;
+
+            let mut dog_client = FrillsClient::builder("DogClient")
+                .remote_from_str("127.0.0.1:12345")
+                .cache_size(1)
+                .build().await
+                .unwrap();
+            let mut dog_handle = dog_client.get_client_handle();
+
+            dog_handle.register_topic("DogNames").await;
+            dog_handle.register_topic("l33tPuppyNames").await;
+            dog_handle.subscribe_to_topic("l33tPuppyNames").await;
+
+            // to ensure all of the topics are registered properly
+            tokio::time::delay_for(Duration::from_millis(250)).await;
+
+            // let's push out some dog names
+            let dog_names = vec!["fido", "rufus", "taiko"];
+            dog_handle.push_messages("DogNames", dog_names.into_iter().map(|name| name.as_bytes().to_vec()).collect()).await;
+
+            // damned async closures don't work yet; gotta use `while let`
+            // for more speed, convert this to be concurrent by pulling additional messages
+            // and executing your tasks in parallel with join_all
+            while let Some(message) = dog_client.next().await {
+                let puppy_name = String::from_utf8(message.message).unwrap();
+                let dog_name = puppy_to_dog(puppy_name.clone());
+
+                println!("(Dog Client): Converted {} to {}", puppy_name, dog_name);
+
+                dog_handle.push_messages("DogNames", vec![dog_name.into_bytes().to_vec()]).await
+            }
+        });
+
+        tokio::spawn(async {
+            // give the server some time to start
+            tokio::time::delay_for(Duration::from_millis(250)).await;
+
+            let mut puppy_client = FrillsClient::builder("l33tPuppyClient")
+                .remote_from_str("127.0.0.1:12345")
+                .cache_size(1)
+                .build().await
+                .unwrap();
+            let mut puppy_handle = puppy_client.get_client_handle();
+
+            puppy_handle.register_topic("DogNames").await;
+            puppy_handle.register_topic("l33tPuppyNames").await;
+            puppy_handle.subscribe_to_topic("DogNames").await;
+
+
+            // to ensure all of the topics are registered properly
+            tokio::time::delay_for(Duration::from_millis(250)).await;
+
+            // damned async closures don't work yet; gotta use `while let`
+            // for more speed, convert this to be concurrent by pulling additional messages
+            // and executing your tasks in parallel with join_all
+            while let Some(message) = puppy_client.next().await {
+                let dog_name = String::from_utf8(message.message).unwrap();
+                let puppy_name = dog_to_puppy(dog_name.clone());
+
+                println!("(133t Puppy Client): Converted {} to {}", dog_name, puppy_name);
+
+                puppy_handle.push_messages("l33tPuppyNames", vec![puppy_name.into_bytes().to_vec()]).await
+            }
+        });
+
+        server.run().await;
+    });
+}
+
+
+fn puppy_to_dog(puppy_name: String) -> String {
+    puppy_name.replace("1", "i")
+        .replace("0", "o")
+        .replace("5", "s")
+        .replace("@", "a")
+}
+
+fn dog_to_puppy(dog_name: String) -> String {
+    dog_name.replace("i", "1")
+        .replace("o", "0")
+        .replace("s", "5")
+        .replace("a", "@")
 }

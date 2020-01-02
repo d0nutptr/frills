@@ -82,6 +82,7 @@ pub struct UnAckedFrillsMessage {
     pub message_id: u32,
 }
 
+#[derive(Clone)]
 pub struct FrillsClientHandle {
     worker_channel: Sender<FrillsClientTask>,
 }
