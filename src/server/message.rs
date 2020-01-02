@@ -1,40 +1,45 @@
-use tokio::sync::mpsc::Sender;
 use tokio::net::TcpStream;
+use tokio::sync::mpsc::Sender;
 
 pub enum ClientToMasterMessage {
     RegisterTopic {
-        name: String
+        name: String,
     },
     RegisterService {
-        name: String
+        name: String,
     },
     SubscribeServiceToTopic {
         service: String,
-        topic: String
+        topic: String,
     },
     PushMessage {
         topic: String,
         message: Vec<u8>,
     },
-    PullMessage {
+    PullMessages {
         service: String,
-        client: Sender<NewMessage>
+        client: Sender<NewMessages>,
+        count: u32,
     },
     ACK {
         message_id: u32,
-        service: String
+        service: String,
     },
     NACK {
         message_id: u32,
-        service: String
+        service: String,
     },
     Disconnect,
     Shutdown,
 }
 
+pub struct NewMessages {
+    pub messages: Vec<NewMessage>,
+}
+
 pub struct NewMessage {
     pub message_id: u32,
-    pub message: Vec<u8>
+    pub message: Vec<u8>,
 }
 
 pub struct NewConnectionNotification {

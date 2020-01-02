@@ -1,30 +1,28 @@
+use crate::codec::{FrillsClientToServer, FrillsCodec, FrillsMessage, FrillsServerToClient};
+use crate::server::message::{NewMessage, NewMessages};
+use crate::server::ClientToMasterMessage;
+use crate::utils::next_either;
+use futures::future::Either;
+use futures::StreamExt;
+use futures_util::sink::SinkExt;
 use pin_project::pin_project;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::prelude::*;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio_util::codec::Framed;
-use crate::codec::{FrillsMessage, FrillsServerToClient, FrillsClientToServer, FrillsCodec};
-use futures::future::Either;
-use crate::utils::next_either;
-use futures_util::sink::SinkExt;
-use futures::StreamExt;
-use crate::server::ClientToMasterMessage;
-use crate::server::message::NewMessage;
 
 pub struct ClientThread {
     stream: Option<Framed<TcpStream, FrillsCodec>>, // TcpStream
     master_sender: Sender<ClientToMasterMessage>,
-    message_receiver: Option<Receiver<NewMessage>>,
-    message_sender: Sender<NewMessage>,
+    message_receiver: Option<Receiver<NewMessages>>,
+    message_sender: Sender<NewMessages>,
     service_name: Option<String>,
     shutdown: bool,
+    counter: u32,
 }
 
 impl ClientThread {
-    pub fn new(
-        stream: TcpStream,
-        sender: Sender<ClientToMasterMessage>
-    ) -> Self {
+    pub fn new(stream: TcpStream, sender: Sender<ClientToMasterMessage>) -> Self {
         let (message_sender, message_receiver) = channel(100_000);
 
         Self {
@@ -34,6 +32,7 @@ impl ClientThread {
             message_sender,
             service_name: None,
             shutdown: false,
+            counter: 0,
         }
     }
 
@@ -52,14 +51,16 @@ impl ClientThread {
             FrillsMessage::ClientToServer(FrillsClientToServer::RegisterAsService { name }) => {
                 self.register_as_service(name).await;
             }
-            FrillsMessage::ClientToServer(FrillsClientToServer::SubscribeToTopic { topic_name }) => {
+            FrillsMessage::ClientToServer(FrillsClientToServer::SubscribeToTopic {
+                topic_name,
+            }) => {
                 self.subscribe_to_topic(topic_name).await;
             }
             FrillsMessage::ClientToServer(FrillsClientToServer::PushMessage { topic, message }) => {
                 self.push_message(topic, message).await;
             }
-            FrillsMessage::ClientToServer(FrillsClientToServer::PullMessage) => {
-                self.pull_message().await;
+            FrillsMessage::ClientToServer(FrillsClientToServer::PullMessages { count }) => {
+                self.pull_messages(count).await;
             }
             FrillsMessage::ClientToServer(FrillsClientToServer::ACKMessage { message_id }) => {
                 self.ack_message(message_id).await;
@@ -82,15 +83,19 @@ impl ClientThread {
     }
 
     async fn register_topic(&mut self, name: String) {
-        self.master_sender.send(ClientToMasterMessage::RegisterTopic { name }).await;
+        self.master_sender
+            .send(ClientToMasterMessage::RegisterTopic { name })
+            .await;
     }
 
     async fn register_as_service(&mut self, name: String) {
         match self.service_name {
-            Some(_) => {},
+            Some(_) => {}
             None => {
                 self.service_name = Some(name.clone());
-                self.master_sender.send(ClientToMasterMessage::RegisterService { name }).await;
+                self.master_sender
+                    .send(ClientToMasterMessage::RegisterService { name })
+                    .await;
             }
         }
     }
@@ -98,59 +103,93 @@ impl ClientThread {
     async fn subscribe_to_topic(&mut self, topic_name: String) {
         match &self.service_name {
             Some(service_name) => {
-                self.master_sender.send(ClientToMasterMessage::SubscribeServiceToTopic { service: service_name.clone(), topic: topic_name }).await;
-            },
+                self.master_sender
+                    .send(ClientToMasterMessage::SubscribeServiceToTopic {
+                        service: service_name.clone(),
+                        topic: topic_name,
+                    })
+                    .await;
+            }
             _ => {}
         }
     }
 
     async fn push_message(&mut self, topic: String, data: Vec<u8>) {
-        self.master_sender.send(ClientToMasterMessage::PushMessage { topic, message: data }).await;
+        self.master_sender
+            .send(ClientToMasterMessage::PushMessage {
+                topic,
+                message: data,
+            })
+            .await;
     }
 
-    async fn pull_message(&mut self) {
+    async fn pull_messages(&mut self, count: u32) {
         let service_name = match &self.service_name {
             Some(name) => name.clone(),
-            _ => return
+            _ => return,
         };
 
-        self.master_sender.send(ClientToMasterMessage::PullMessage { service: service_name, client: self.message_sender.clone() }).await;
+        self.master_sender
+            .send(ClientToMasterMessage::PullMessages {
+                service: service_name,
+                client: self.message_sender.clone(),
+                count,
+            })
+            .await;
     }
 
     async fn ack_message(&mut self, message_id: u32) {
         let service = match &self.service_name {
             Some(name) => name.clone(),
-            _ => return
+            _ => return,
         };
 
-        self.master_sender.send(ClientToMasterMessage::ACK { message_id, service }).await;
+        self.master_sender
+            .send(ClientToMasterMessage::ACK {
+                message_id,
+                service,
+            })
+            .await;
     }
 
     async fn nack_message(&mut self, message_id: u32) {
         let service = match &self.service_name {
             Some(name) => name.clone(),
-            _ => return
+            _ => return,
         };
 
-        self.master_sender.send(ClientToMasterMessage::NACK { message_id, service }).await;
+        self.master_sender
+            .send(ClientToMasterMessage::NACK {
+                message_id,
+                service,
+            })
+            .await;
     }
 
     pub async fn perform_master_shutdown(&mut self) {
-        self.master_sender.send(ClientToMasterMessage::Shutdown).await;
+        self.master_sender
+            .send(ClientToMasterMessage::Shutdown)
+            .await;
     }
 
-    pub async fn return_message_to_client(&mut self, message: NewMessage) {
-        self.send_tcp(FrillsMessage::ServerToClient(FrillsServerToClient::PulledMessage {
-            message: message.message,
-            message_id: message.message_id
-        })).await;
+    pub async fn return_message_to_client(&mut self, message: NewMessages) {
+        self.send_tcp(FrillsMessage::ServerToClient(
+            FrillsServerToClient::PulledMessages {
+                messages: message
+                    .messages
+                    .into_iter()
+                    .map(|message| (message.message, message.message_id))
+                    .collect(),
+            },
+        ))
+        .await;
     }
 
     pub async fn run(mut self) {
         while !self.shutdown {
-            let next_message = {
+            let (tcp_messages, client_bound_messages) = {
                 let mut framed_stream = self.stream.take().unwrap();
-                let mut message_stream = self.message_receiver.take().unwrap();;
+                let mut message_stream = self.message_receiver.take().unwrap();
 
                 let mut either = next_either(framed_stream, message_stream);
                 let next_message = either.next().await.unwrap();
@@ -164,16 +203,13 @@ impl ClientThread {
                 next_message
             };
 
-            match next_message {
-                // New Connection
-                Either::Left(message) => {
-                    self.process_tcp(message.unwrap()).await;
-                }
-                // New client thread
-                Either::Right(message) => {
-                    self.return_message_to_client(message).await;
-                }
-            };
+            for tcp_message in tcp_messages {
+                self.process_tcp(tcp_message.unwrap()).await;
+            }
+
+            for client_bound_message in client_bound_messages {
+                self.return_message_to_client(client_bound_message).await;
+            }
         }
     }
 }

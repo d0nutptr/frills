@@ -1,9 +1,9 @@
+use crate::server::message::NewConnectionNotification;
+use crate::server::ClientThread;
+use slab::Slab;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
-use crate::server::ClientThread;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
-use crate::server::message::NewConnectionNotification;
-use slab::Slab;
 
 pub struct ClientConnectListener {
     listener: TcpListener,
@@ -26,7 +26,9 @@ impl ClientConnectListener {
         loop {
             match self.listener.accept().await {
                 Ok((_socket, addr)) => {
-                    self.master_channel.send(NewConnectionNotification { stream: _socket }).await;
+                    self.master_channel
+                        .send(NewConnectionNotification { stream: _socket })
+                        .await;
                 }
                 Err(e) => println!("couldn't get client: {:?}", e),
             }

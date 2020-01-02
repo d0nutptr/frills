@@ -1,13 +1,13 @@
-use tokio::sync::mpsc::{channel, Receiver, Sender};
+use crate::server::message::{NewConnectionNotification, NewMessage, NewMessages};
 use crate::server::{ClientConnectListener, ClientThread, ClientToMasterMessage};
-use pin_project::pin_project;
-use crate::server::message::{NewConnectionNotification, NewMessage};
 use crate::utils::next_either;
-use futures::StreamExt;
-use futures::future::Either;
-use std::collections::{HashMap, HashSet, VecDeque};
 use futures::future::join_all;
+use futures::future::Either;
+use futures::StreamExt;
+use pin_project::pin_project;
 use slab::Slab;
+use std::collections::{HashMap, HashSet, VecDeque};
+use tokio::sync::mpsc::{channel, Receiver, Sender};
 
 pub struct FrillsServer {
     connection_receiver: Option<Receiver<NewConnectionNotification>>,
@@ -15,13 +15,14 @@ pub struct FrillsServer {
     client_thread_sender: Sender<ClientToMasterMessage>,
     services: HashMap<String, Service>,
     topics: HashMap<String, Topic>,
-    shutdown: bool
+    shutdown: bool,
+    count: u32,
 }
 
 impl FrillsServer {
     pub fn new(port: u16) -> Self {
         let (connection_sender, connection_receiver) = channel(16);
-        let (client_thread_sender, client_thread_receiver) = channel(100_000);
+        let (client_thread_sender, client_thread_receiver) = channel(16);
 
         // spawn connection listener
         tokio::spawn(async move {
@@ -36,13 +37,14 @@ impl FrillsServer {
             client_thread_sender,
             shutdown: false,
             services: HashMap::new(),
-            topics: HashMap::new()
+            topics: HashMap::new(),
+            count: 0,
         }
     }
 
     pub async fn run(mut self) {
         while !self.shutdown {
-            let next_message = {
+            let (connection_received_messages, client_thread_messages) = {
                 let mut connection_receiver = self.connection_receiver.take().unwrap();
                 let mut client_thread_receiver = self.client_thread_receiver.take().unwrap();
 
@@ -50,29 +52,32 @@ impl FrillsServer {
                 let next_message = either.next().await.unwrap();
 
                 // release the streams so we can work with them again (namely, tcp_stream)
-                let (released_connection_receiver, released_client_thread_receiver) = either.release();
+                let (released_connection_receiver, released_client_thread_receiver) =
+                    either.release();
 
-                self.connection_receiver.replace(released_connection_receiver);
-                self.client_thread_receiver.replace(released_client_thread_receiver);
+                self.connection_receiver
+                    .replace(released_connection_receiver);
+                self.client_thread_receiver
+                    .replace(released_client_thread_receiver);
 
                 next_message
             };
 
-            match next_message {
-                // New Connection
-                Either::Left(message) => {
-                    self.create_new_client(message).await;
-                }
-                // New client thread
-                Either::Right(message) => {
-                    self.process_client_message(message).await;
-                }
-            };
+            for connection_received_message in connection_received_messages {
+                self.create_new_client(connection_received_message).await;
+            }
+
+            for client_thread_message in client_thread_messages {
+                self.process_client_message(client_thread_message).await;
+            }
         }
     }
 
     async fn create_new_client(&mut self, new_connection_notification: NewConnectionNotification) {
-        let client = ClientThread::new(new_connection_notification.stream, self.client_thread_sender.clone());
+        let client = ClientThread::new(
+            new_connection_notification.stream,
+            self.client_thread_sender.clone(),
+        );
         tokio::spawn(client.run());
     }
 
@@ -80,26 +85,36 @@ impl FrillsServer {
         match message {
             ClientToMasterMessage::Shutdown => {
                 self.perform_shutdown();
-            },
+            }
             ClientToMasterMessage::RegisterTopic { name } => {
                 self.register_topic(name);
-            },
+            }
             ClientToMasterMessage::RegisterService { name } => {
                 self.register_service(name);
-            },
+            }
             ClientToMasterMessage::SubscribeServiceToTopic { topic, service } => {
                 self.subscribe_service_to_topic(topic, service);
-            },
+            }
             ClientToMasterMessage::PushMessage { topic, message } => {
                 self.new_message(topic, message).await;
-            },
-            ClientToMasterMessage::PullMessage { service, client } => {
-                self.pull_message(service, client).await;
-            },
-            ClientToMasterMessage::ACK { service, message_id } => {
+            }
+            ClientToMasterMessage::PullMessages {
+                service,
+                client,
+                count,
+            } => {
+                self.pull_message(service, client, count).await;
+            }
+            ClientToMasterMessage::ACK {
+                service,
+                message_id,
+            } => {
                 self.ack_message(service, message_id).await;
-            },
-            ClientToMasterMessage::NACK { service, message_id } => {
+            }
+            ClientToMasterMessage::NACK {
+                service,
+                message_id,
+            } => {
                 self.nack_message(service, message_id).await;
             }
             _ => {}
@@ -125,7 +140,7 @@ impl FrillsServer {
     fn subscribe_service_to_topic(&mut self, topic_name: String, service_name: String) {
         let topic = match self.topics.get_mut(&topic_name) {
             Some(topic) => topic,
-            None => return
+            None => return,
         };
 
         if self.services.contains_key(&service_name) {
@@ -135,29 +150,29 @@ impl FrillsServer {
 
     async fn new_message(&mut self, topic: String, message: Vec<u8>) {
         let services: Vec<&String> = match self.topics.get(&topic) {
-            Some(topic) => {
-                topic.registered_services.iter().collect()
-            },
-            _ => { return }
+            Some(topic) => topic.registered_services.iter().collect(),
+            _ => return,
         };
 
         for service_name in services {
             let service = match self.services.get_mut(service_name) {
                 Some(service) => service,
-                _ => { continue }
+                _ => continue,
             };
 
-            service.enqueue_message(Message {
-                data: message.clone()
-            }).await;
+            service
+                .enqueue_message(Message {
+                    data: message.clone(),
+                })
+                .await;
         }
     }
 
-    async fn pull_message(&mut self, service: String, client: Sender<NewMessage>) {
+    async fn pull_message(&mut self, service: String, client: Sender<NewMessages>, count: u32) {
         match self.services.get_mut(&service) {
             Some(service) => {
-                service.pull_next_message(client.clone()).await;
-            },
+                service.pull_next_messages(client, count).await;
+            }
             _ => {}
         }
     }
@@ -165,7 +180,7 @@ impl FrillsServer {
     async fn ack_message(&mut self, service: String, message_id: u32) {
         let service = match self.services.get_mut(&service) {
             Some(service) => service,
-            _ => return
+            _ => return,
         };
 
         service.ack_message(message_id, false).await;
@@ -174,7 +189,7 @@ impl FrillsServer {
     async fn nack_message(&mut self, service: String, message_id: u32) {
         let service = match self.services.get_mut(&service) {
             Some(service) => service,
-            _ => return
+            _ => return,
         };
 
         service.ack_message(message_id, true).await;
@@ -201,7 +216,7 @@ struct Service {
     registered_clients: HashSet<u32>,
     unsatisfied_messages: Slab<Message>,
     enqueued_messages: VecDeque<Message>,
-    pending_clients: VecDeque<Sender<NewMessage>>
+    pending_clients: VecDeque<Sender<NewMessages>>,
 }
 
 impl Service {
@@ -210,7 +225,7 @@ impl Service {
             registered_clients: HashSet::new(),
             unsatisfied_messages: Slab::with_capacity(10_000),
             enqueued_messages: VecDeque::new(),
-            pending_clients: VecDeque::new()
+            pending_clients: VecDeque::new(),
         }
     }
 
@@ -222,26 +237,45 @@ impl Service {
         if !self.pending_clients.is_empty() {
             let message_id = self.unsatisfied_messages.insert(message.clone());
             let mut client = self.pending_clients.pop_front().unwrap();
-            client.send(NewMessage {
-                message_id: message_id as u32,
-                message: message.data
-            }).await;
+
+            tokio::spawn(async move {
+                client
+                    .send(NewMessages {
+                        messages: vec![NewMessage {
+                            message_id: message_id as u32,
+                            message: message.data,
+                        }],
+                    })
+                    .await
+            });
         } else {
             self.enqueued_messages.push_back(message);
         }
     }
 
-    async fn pull_next_message(&mut self, mut client: Sender<NewMessage>) {
+    async fn pull_next_messages(&mut self, mut client: Sender<NewMessages>, count: u32) {
         if self.enqueued_messages.is_empty() {
-            self.pending_clients.push_back(client);
+            tokio::spawn(async move {
+                client.send(NewMessages { messages: vec![] }).await;
+            });
         } else {
-            let next_message = self.enqueued_messages.pop_front().unwrap();
-            let message_id = self.unsatisfied_messages.insert(next_message.clone());
+            let mut messages = Vec::new();
 
-            client.send(NewMessage {
-                message_id: message_id as u32,
-                message: next_message.data
-            }).await;
+            for _ in 0..count {
+                match self.enqueued_messages.pop_front() {
+                    Some(message) => {
+                        let message_id = self.unsatisfied_messages.insert(message.clone()) as u32;
+
+                        messages.push(NewMessage {
+                            message_id,
+                            message: message.data,
+                        });
+                    }
+                    None => break,
+                }
+            }
+
+            tokio::spawn(async move { client.send(NewMessages { messages }).await });
         }
     }
 
