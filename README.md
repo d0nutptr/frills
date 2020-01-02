@@ -18,7 +18,7 @@ A list of some features that are missing (currently):
 This thing has some issues too! For example, if no messages are transmitted, the clients frantically call out into the void asking for more messages (and the server responds with an empty message set..) which causes some high cpu usage. It's not hard to fix, I'm just lazy and haven't done it yet. Basically, I'd un-fuck the server code that I messed up while debugging an issue where I axe'd the whole "Pending Clients" idea which would allow clients to ask for a message and then CHILL-OUT until a message finally hit the queue. 
 
 ## Example
-`server.rs - 1.2.3.4`
+`server.rs`
 ```rust
 #[tokio::main]
 async fn main() {
@@ -61,7 +61,11 @@ async fn main() {
 
       println!("(Dog Client): Converted {} to {}", puppy_name, dog_name);
 
-      dog_handle.push_messages("DogNames", vec![dog_name.into_bytes().to_vec()]).await
+      let mut dog_handle_cln = dog_handle.clone();
+      tokio::spawn(async move { dog_handle_cln.push_messages("DogNames", vec![dog_name.into_bytes().to_vec()]).await});
+
+      let mut dog_handle_cln = dog_handle.clone();
+      tokio::spawn(async move { dog_handle_cln.ack_message(vec![message_id]).await});
   }
 }
 ```
@@ -96,7 +100,11 @@ async fn main() {
 
       println!("(133t Puppy Client): Converted {} to {}", dog_name, puppy_name);
 
-      puppy_handle.push_messages("l33tPuppyNames", vec![puppy_name.into_bytes().to_vec()]).await
+      let mut puppy_handle_cln = puppy_handle.clone();
+      tokio::spawn(async move { puppy_handle_cln.push_messages("l33tPuppyNames", vec![puppy_name.into_bytes().to_vec()]).await });
+
+      let mut puppy_handle_cln = puppy_handle.clone();
+      tokio::spawn(async move { puppy_handle_cln.ack_message(vec![message_id]).await });
   }
 }
 ```
