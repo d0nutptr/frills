@@ -54,7 +54,10 @@ async fn main() {
   // and executing your tasks in parallel with join_all
   while let Some(message) = dog_client.next().await {
       let puppy_name = String::from_utf8(message.message).unwrap();
-      let dog_name = puppy_to_dog(puppy_name.clone());
+      let dog_name = puppy_name.clone().replace("1", "i")
+        .replace("0", "o")
+        .replace("5", "s")
+        .replace("@", "a");
 
       println!("(Dog Client): Converted {} to {}", puppy_name, dog_name);
 
@@ -86,7 +89,10 @@ async fn main() {
   // and executing your tasks in parallel with join_all
   while let Some(message) = puppy_client.next().await {
       let dog_name = String::from_utf8(message.message).unwrap();
-      let puppy_name = dog_to_puppy(dog_name.clone());
+      let puppy_name = dog_name.clone().replace("i", "1")
+        .replace("o", "0")
+        .replace("s", "5")
+        .replace("a", "@");
 
       println!("(133t Puppy Client): Converted {} to {}", dog_name, puppy_name);
 
