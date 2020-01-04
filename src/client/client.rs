@@ -76,7 +76,7 @@ impl FrillsClient {
     }
 
     pub fn get_service_name(&self) -> String {
-        self.service_name
+        self.service_name.clone()
     }
 }
 
