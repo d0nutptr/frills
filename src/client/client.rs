@@ -74,6 +74,10 @@ impl FrillsClient {
     pub fn get_client_handle(&self) -> FrillsClientHandle {
         FrillsClientHandle::new(self.worker_channel.clone())
     }
+
+    pub fn get_service_name(&self) -> String {
+        self.service_name
+    }
 }
 
 #[derive(Clone)]
