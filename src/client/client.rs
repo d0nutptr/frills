@@ -72,7 +72,7 @@ impl FrillsClient {
     }
 
     pub fn get_client_handle(&self) -> FrillsClientHandle {
-        FrillsClientHandle::new(self.worker_channel.clone())
+        FrillsClientHandle::new(self.get_service_name(), self.worker_channel.clone())
     }
 
     pub fn get_service_name(&self) -> String {
@@ -89,11 +89,12 @@ pub struct UnAckedFrillsMessage {
 #[derive(Clone)]
 pub struct FrillsClientHandle {
     worker_channel: Sender<FrillsClientTask>,
+    service_name: String
 }
 
 impl FrillsClientHandle {
-    fn new(worker_channel: Sender<FrillsClientTask>) -> Self {
-        Self { worker_channel }
+    fn new(service_name: String, worker_channel: Sender<FrillsClientTask>) -> Self {
+        Self { service_name, worker_channel }
     }
 
     pub async fn register_topic(&mut self, topic: &str) {
@@ -131,6 +132,10 @@ impl FrillsClientHandle {
         self.worker_channel
             .send(FrillsClientTask::NACKMessages { message_ids })
             .await;
+    }
+
+    pub fn get_service_name(&self) -> String {
+        self.service_name.clone()
     }
 }
 
