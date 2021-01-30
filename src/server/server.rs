@@ -8,10 +8,11 @@ use pin_project::pin_project;
 use slab::Slab;
 use std::collections::{HashMap, HashSet, VecDeque};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio_stream::wrappers::ReceiverStream;
 
 pub struct FrillsServer {
-    connection_receiver: Option<Receiver<NewConnectionNotification>>,
-    client_thread_receiver: Option<Receiver<ClientToMasterMessage>>,
+    connection_receiver: Option<ReceiverStream<NewConnectionNotification>>,
+    client_thread_receiver: Option<ReceiverStream<ClientToMasterMessage>>,
     client_thread_sender: Sender<ClientToMasterMessage>,
     services: HashMap<String, Service>,
     topics: HashMap<String, Topic>,
@@ -32,8 +33,8 @@ impl FrillsServer {
         });
 
         Self {
-            connection_receiver: Some(connection_receiver),
-            client_thread_receiver: Some(client_thread_receiver),
+            connection_receiver: Some(ReceiverStream::new(connection_receiver)),
+            client_thread_receiver: Some(ReceiverStream::new(client_thread_receiver)),
             client_thread_sender,
             shutdown: false,
             services: HashMap::new(),

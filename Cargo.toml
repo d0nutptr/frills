@@ -11,14 +11,15 @@ name = "frills_server"
 path = "src/frills_server.rs"
 
 [dependencies]
-bincode = "^1"
-bytes = "^0.5"
-clap = "^2.33"
-futures = "^0.3"
-futures-core = "^0.3"
-futures-util = "^0.3"
-pin-project = "0.4.6"
+bincode = "1"
+bytes = "1"
+clap = "2"
+futures = "0.3"
+futures-core = "0.3"
+futures-util = "0.3"
+pin-project = "1"
 serde = { version = "^1", features = ["derive"]}
-slab = "^0.4"
-tokio = { version = "^0.2", features = ["tcp", "rt-threaded", "sync", "io-util", "stream", "time", "macros"]}
-tokio-util = { version = "0.2.0", features = ["codec"]}
+slab = "0.4"
+tokio = { version = "1", features = ["net", "rt-multi-thread", "sync", "io-util", "time", "macros"]}
+tokio-util = { version = "0.6", features = ["codec"]}
+tokio-stream = "0.1"

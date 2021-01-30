@@ -4,12 +4,13 @@ use crate::utils::next_either;
 use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio::sync::mpsc::{channel, Receiver, Sender, UnboundedReceiver};
 use tokio_util::codec::Framed;
+use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
 
 pub(crate) struct FrillsClientWorker {
     remote_stream: Option<Framed<TcpStream, FrillsCodec>>,
-    client_receiver: Option<Receiver<FrillsClientTask>>,
+    client_receiver: Option<UnboundedReceiverStream<FrillsClientTask>>,
     worker_message_broadcast: Sender<Vec<UnAckedFrillsMessage>>,
     shutdown: bool,
 }
@@ -17,12 +18,12 @@ pub(crate) struct FrillsClientWorker {
 impl FrillsClientWorker {
     pub(crate) fn new(
         stream: Framed<TcpStream, FrillsCodec>,
-        client_receiver: Receiver<FrillsClientTask>,
+        client_receiver: UnboundedReceiver<FrillsClientTask>,
         worker_message_broadcast: Sender<Vec<UnAckedFrillsMessage>>,
     ) -> Self {
         Self {
             remote_stream: Some(stream),
-            client_receiver: Some(client_receiver),
+            client_receiver: Some(UnboundedReceiverStream::new(client_receiver)),
             worker_message_broadcast,
             shutdown: false,
         }

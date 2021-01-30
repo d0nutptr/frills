@@ -19,11 +19,10 @@ impl From<std::io::Error> for FrillsCodecError {
     }
 }
 
-impl Encoder for FrillsCodec {
-    type Item = FrillsMessage;
+impl Encoder<FrillsMessage> for FrillsCodec {
     type Error = FrillsCodecError;
 
-    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
+    fn encode(&mut self, item: FrillsMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
         match bincode::serialize(&item) {
             Ok(output) => {
                 dst.reserve(output.len());

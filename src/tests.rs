@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::{Duration, SystemTime};
 use tokio::net::TcpStream;
-use tokio::prelude::*;
 use tokio_util::codec::Framed;
 use tokio::runtime::Runtime;
 use serde::de::value::StringDeserializer;
@@ -142,7 +141,7 @@ async fn run_ack_client(service_name: &str, cache_size: u16, remote: &str, topic
         .unwrap();
 
     let mut ack_client_handle = ack_client.get_client_handle();
-    ack_client_handle.subscribe_to_topic(topic).await;
+    ack_client_handle.subscribe_to_topic(topic);
 
     let mut message_count = 0u32;
 
@@ -161,7 +160,7 @@ async fn run_ack_client(service_name: &str, cache_size: u16, remote: &str, topic
             data.push(message);
         }
 
-        ack_client_handle.ack_message(data.iter().map(|message| message.message_id).collect()).await;
+        ack_client_handle.ack_message(data.iter().map(|message| message.message_id).collect());
 
         println!(
             "ACK - {} ({})",

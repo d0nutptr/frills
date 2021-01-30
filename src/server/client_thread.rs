@@ -7,14 +7,14 @@ use futures::StreamExt;
 use futures_util::sink::SinkExt;
 use pin_project::pin_project;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::prelude::*;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio_util::codec::Framed;
+use tokio_stream::wrappers::ReceiverStream;
 
 pub struct ClientThread {
     stream: Option<Framed<TcpStream, FrillsCodec>>, // TcpStream
     master_sender: Sender<ClientToMasterMessage>,
-    message_receiver: Option<Receiver<NewMessages>>,
+    message_receiver: Option<ReceiverStream<NewMessages>>,
     message_sender: Sender<NewMessages>,
     service_name: Option<String>,
     shutdown: bool,
@@ -28,7 +28,7 @@ impl ClientThread {
         Self {
             stream: Some(Framed::new(stream, FrillsCodec {})),
             master_sender: sender,
-            message_receiver: Some(message_receiver),
+            message_receiver: Some(ReceiverStream::new(message_receiver)),
             message_sender,
             service_name: None,
             shutdown: false,
