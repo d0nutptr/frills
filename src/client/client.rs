@@ -219,14 +219,13 @@ impl Builder {
         self
     }
 
-    pub fn remote(mut self, remote: SocketAddr) -> Self {
+    pub fn remote(mut self, remote: String) -> Self {
         self.config.remote = remote;
         self
     }
 
-    /// Panics if `remote` is not a valid SocketAddr
     pub fn remote_from_str(mut self, remote: &str) -> Self {
-        self.config.remote = SocketAddr::from_str(remote).unwrap();
+        self.config.remote = remote.to_string();
         self
     }
 
@@ -238,7 +237,7 @@ impl Builder {
 pub struct FrillsClientConfig {
     service_name: String,
     cache_size: u16,
-    remote: SocketAddr
+    remote: String
 }
 
 impl Default for FrillsClientConfig {
@@ -246,7 +245,7 @@ impl Default for FrillsClientConfig {
         Self {
             service_name: "ClientService".to_string(),
             cache_size: 16,
-            remote: SocketAddr::from_str("127.0.0.1:0").unwrap()
+            remote: "127.0.0.1:12345".to_string()
         }
     }
 }
