@@ -23,7 +23,7 @@ COPY --from=cacher /usr/src/frills/target target
 COPY --from=cacher $CARGO_HOME $CARGO_HOME
 RUN cargo build --target x86_64-unknown-linux-musl --release
 
-FROM scratch
+FROM scratch AS frills_server
 COPY --from=builder /usr/src/frills/target/x86_64-unknown-linux-musl/release/frills_server /bin/frills_server
 EXPOSE 12345/tcp
 CMD ["/bin/frills_server"]
