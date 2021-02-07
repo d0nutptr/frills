@@ -32,7 +32,9 @@ impl FrillsClient {
         let cache_size = config.cache_size;
         let service_name = config.service_name;
 
-        let remote_stream = match TcpStream::connect(remote).await {
+        let remote_addrs: Vec<_> = tokio::net::lookup_host(remote).await.ok()?.collect();
+
+        let remote_stream = match TcpStream::connect(&*remote_addrs).await {
             Ok(stream) => Framed::new(stream, FrillsCodec {}),
             _ => return None,
         };
