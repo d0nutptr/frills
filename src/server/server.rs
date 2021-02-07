@@ -1,14 +1,12 @@
 use crate::server::message::{NewConnectionNotification, NewMessage, NewMessages};
 use crate::server::{ClientConnectListener, ClientThread, ClientToMasterMessage};
 use crate::utils::next_either;
-use futures::future::join_all;
-use futures::future::Either;
 use futures::StreamExt;
-use pin_project::pin_project;
 use slab::Slab;
 use std::collections::{HashMap, HashSet, VecDeque};
-use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio::sync::mpsc::{channel, Sender};
 use tokio_stream::wrappers::ReceiverStream;
+use tracing::info;
 
 pub struct FrillsServer {
     connection_receiver: Option<ReceiverStream<NewConnectionNotification>>,
@@ -46,8 +44,8 @@ impl FrillsServer {
     pub async fn run(mut self) {
         while !self.shutdown {
             let (connection_received_messages, client_thread_messages) = {
-                let mut connection_receiver = self.connection_receiver.take().unwrap();
-                let mut client_thread_receiver = self.client_thread_receiver.take().unwrap();
+                let connection_receiver = self.connection_receiver.take().unwrap();
+                let client_thread_receiver = self.client_thread_receiver.take().unwrap();
 
                 let mut either = next_either(connection_receiver, client_thread_receiver);
                 let next_message = either.next().await.unwrap();
@@ -88,15 +86,23 @@ impl FrillsServer {
                 self.perform_shutdown();
             }
             ClientToMasterMessage::RegisterTopic { name } => {
+                info!("Registering Topic {}", name);
+
                 self.register_topic(name);
             }
             ClientToMasterMessage::RegisterService { name } => {
+                info!("Registering Service {}", name);
+
                 self.register_service(name);
             }
             ClientToMasterMessage::SubscribeServiceToTopic { topic, service } => {
+                info!("Subscribing {} Service to {} Topic", service, topic);
+
                 self.subscribe_service_to_topic(topic, service);
             }
             ClientToMasterMessage::PushMessages { topic, messages } => {
+                info!("Pushing message to topic {}", topic);
+
                 self.push_messages(topic, messages).await;
             }
             ClientToMasterMessage::PullMessages {
@@ -240,7 +246,7 @@ impl Service {
         self.enqueued_messages.extend(messages);
     }
 
-    async fn pull_messages(&mut self, mut client: Sender<NewMessages>, count: u32) {
+    async fn pull_messages(&mut self, client: Sender<NewMessages>, count: u32) {
         if self.enqueued_messages.is_empty() {
             tokio::spawn(async move {
                 client.send(NewMessages { messages: vec![] }).await;

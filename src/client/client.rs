@@ -1,23 +1,19 @@
 use crate::client::worker::{FrillsClientTask, FrillsClientWorker};
-use crate::codec::{FrillsClientToServer, FrillsCodec, FrillsMessage, FrillsServerToClient};
-use crate::utils::next_either;
-use futures::future::Either;
+use crate::codec::FrillsCodec;
 use futures::task::{Context, Poll};
 use futures::Stream;
-use futures_util::stream::StreamExt;
-use futures_util::sink::SinkExt;
 use pin_project::pin_project;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::{channel, Receiver, Sender, UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio_util::codec::Framed;
 use std::str::FromStr;
 
 #[pin_project]
 pub struct FrillsClient {
     service_name: String,
-    worker_channel: UnboundedSender<FrillsClientTask>,
+    worker_channel: Sender<FrillsClientTask>,
     worker_broadcast_sender: Sender<Vec<UnAckedFrillsMessage>>,
     #[pin]
     worker_broadcast_receiver: Receiver<Vec<UnAckedFrillsMessage>>,
@@ -36,12 +32,12 @@ impl FrillsClient {
         let cache_size = config.cache_size;
         let service_name = config.service_name;
 
-        let mut remote_stream = match TcpStream::connect(remote).await {
+        let remote_stream = match TcpStream::connect(remote).await {
             Ok(stream) => Framed::new(stream, FrillsCodec {}),
             _ => return None,
         };
 
-        let (mut client_sender, client_receiver) = unbounded_channel();
+        let (client_sender, client_receiver) = channel(16);
         let (worker_broadcast_sender, worker_broadcast_receiver) = channel(16);
 
         let cloned_worker_sender = worker_broadcast_sender.clone();
@@ -55,9 +51,9 @@ impl FrillsClient {
         client_sender
             .send(FrillsClientTask::RegisterService {
                 name: service_name.to_string(),
-            });
+            }).await;
 
-        let mut new_client = Self {
+        let new_client = Self {
             service_name: service_name.to_string(),
             worker_channel: client_sender,
             worker_broadcast_sender,
@@ -87,45 +83,47 @@ pub struct UnAckedFrillsMessage {
 
 #[derive(Clone)]
 pub struct FrillsClientHandle {
-    worker_channel: UnboundedSender<FrillsClientTask>,
+    worker_channel: Sender<FrillsClientTask>,
     service_name: String
 }
 
 impl FrillsClientHandle {
-    fn new(service_name: String, worker_channel: UnboundedSender<FrillsClientTask>) -> Self {
+    fn new(service_name: String, worker_channel: Sender<FrillsClientTask>) -> Self {
         Self { service_name, worker_channel }
     }
 
-    pub fn register_topic(&mut self, topic: &str) {
+    pub async fn register_topic(&mut self, topic: &str) {
         self.worker_channel
             .send(FrillsClientTask::RegisterTopic {
                 name: topic.to_string(),
-            });
+            }).await;
     }
 
-    pub fn subscribe_to_topic(&mut self, topic: &str) {
+    pub async fn subscribe_to_topic(&mut self, topic: &str) {
         self.worker_channel
             .send(FrillsClientTask::SubscribeToTopic {
                 name: topic.to_string(),
-            });
+            }).await;
     }
 
-    pub fn push_messages(&mut self, topic: &str, messages: Vec<Vec<u8>>) {
+    pub async fn push_messages(&mut self, topic: &str, messages: Vec<Vec<u8>>) {
         self.worker_channel
             .send(FrillsClientTask::PushMessages {
                 topic: topic.to_string(),
                 messages,
-            });
+            }).await;
     }
 
-    pub fn ack_message(&mut self, message_ids: Vec<u32>) {
+    pub async fn ack_message(&mut self, message_ids: Vec<u32>) {
         self.worker_channel
-            .send(FrillsClientTask::ACKMessages { message_ids });
+            .send(FrillsClientTask::ACKMessages { message_ids })
+            .await;
     }
 
-    pub fn nack_message(&mut self, message_ids: Vec<u32>) {
+    pub async fn nack_message(&mut self, message_ids: Vec<u32>) {
         self.worker_channel
-            .send(FrillsClientTask::NACKMessages { message_ids });
+            .send(FrillsClientTask::NACKMessages { message_ids })
+            .await;
     }
 
     pub fn get_service_name(&self) -> String {
@@ -165,9 +163,16 @@ impl Stream for FrillsClient {
                     return Poll::Ready(None);
                 }
 
-                projection
+                match projection
                     .worker_channel
-                    .send(FrillsClientTask::PullMessages { count: cache_size });
+                    .try_send(FrillsClientTask::PullMessages { count: cache_size })
+                {
+                    Ok(_) => {
+                        cx.waker().wake_by_ref();
+                        *projection.subscribed = true;
+                    }
+                    _ => {}
+                };
             } else {
                 // waiting on the value
                 match projection.worker_broadcast_receiver.poll_recv(cx) {

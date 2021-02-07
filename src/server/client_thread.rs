@@ -1,13 +1,12 @@
 use crate::codec::{FrillsClientToServer, FrillsCodec, FrillsMessage, FrillsServerToClient};
-use crate::server::message::{NewMessage, NewMessages};
+use crate::server::message::NewMessages;
 use crate::server::ClientToMasterMessage;
 use crate::utils::next_either;
-use futures::future::Either;
 use futures::StreamExt;
 use futures_util::sink::SinkExt;
 use pin_project::pin_project;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio::net::TcpStream;
+use tokio::sync::mpsc::{channel, Sender};
 use tokio_util::codec::Framed;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -188,8 +187,8 @@ impl ClientThread {
     pub async fn run(mut self) {
         while !self.shutdown {
             let (tcp_messages, client_bound_messages) = {
-                let mut framed_stream = self.stream.take().unwrap();
-                let mut message_stream = self.message_receiver.take().unwrap();
+                let framed_stream = self.stream.take().unwrap();
+                let message_stream = self.message_receiver.take().unwrap();
 
                 let mut either = next_either(framed_stream, message_stream);
                 let next_message = either.next().await.unwrap();

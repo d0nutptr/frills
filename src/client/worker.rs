@@ -4,13 +4,14 @@ use crate::utils::next_either;
 use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::{channel, Receiver, Sender, UnboundedReceiver};
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::codec::Framed;
-use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
+use tokio_stream::wrappers::ReceiverStream;
+use tracing::info;
 
 pub(crate) struct FrillsClientWorker {
     remote_stream: Option<Framed<TcpStream, FrillsCodec>>,
-    client_receiver: Option<UnboundedReceiverStream<FrillsClientTask>>,
+    client_receiver: Option<ReceiverStream<FrillsClientTask>>,
     worker_message_broadcast: Sender<Vec<UnAckedFrillsMessage>>,
     shutdown: bool,
 }
@@ -18,12 +19,12 @@ pub(crate) struct FrillsClientWorker {
 impl FrillsClientWorker {
     pub(crate) fn new(
         stream: Framed<TcpStream, FrillsCodec>,
-        client_receiver: UnboundedReceiver<FrillsClientTask>,
+        client_receiver: Receiver<FrillsClientTask>,
         worker_message_broadcast: Sender<Vec<UnAckedFrillsMessage>>,
     ) -> Self {
         Self {
             remote_stream: Some(stream),
-            client_receiver: Some(UnboundedReceiverStream::new(client_receiver)),
+            client_receiver: Some(ReceiverStream::new(client_receiver)),
             worker_message_broadcast,
             shutdown: false,
         }
@@ -32,8 +33,8 @@ impl FrillsClientWorker {
     pub(crate) async fn run(&mut self) {
         while !self.shutdown {
             let (remote_messages, client_messages) = {
-                let mut remote_stream = self.remote_stream.take().unwrap();
-                let mut client_receiver = self.client_receiver.take().unwrap();
+                let remote_stream = self.remote_stream.take().unwrap();
+                let client_receiver = self.client_receiver.take().unwrap();
 
                 let mut either = next_either(remote_stream, client_receiver);
                 let next_message = either.next().await.unwrap();

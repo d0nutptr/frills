@@ -1,11 +1,6 @@
 use crate::client::{FrillsClient, UnAckedFrillsMessage};
-use crate::codec::{FrillsClientToServer, FrillsCodec, FrillsMessage, FrillsServerToClient};
 use crate::server::{ClientConnectListener, FrillsServer};
-use futures::Stream;
-use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
-use serde::{Deserialize, Serialize};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::{Duration, SystemTime};
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
@@ -141,7 +136,7 @@ async fn run_ack_client(service_name: &str, cache_size: u16, remote: &str, topic
         .unwrap();
 
     let mut ack_client_handle = ack_client.get_client_handle();
-    ack_client_handle.subscribe_to_topic(topic);
+    ack_client_handle.subscribe_to_topic(topic).await;
 
     let mut message_count = 0u32;
 
@@ -160,7 +155,7 @@ async fn run_ack_client(service_name: &str, cache_size: u16, remote: &str, topic
             data.push(message);
         }
 
-        ack_client_handle.ack_message(data.iter().map(|message| message.message_id).collect());
+        ack_client_handle.ack_message(data.iter().map(|message| message.message_id).collect()).await;
 
         println!(
             "ACK - {} ({})",

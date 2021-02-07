@@ -1,9 +1,7 @@
 use crate::server::message::NewConnectionNotification;
-use crate::server::ClientThread;
-use slab::Slab;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc::{channel, Receiver, Sender};
+use std::net::{IpAddr, SocketAddr};
+use tokio::net::TcpListener;
+use tokio::sync::mpsc::Sender;
 
 pub struct ClientConnectListener {
     listener: TcpListener,
@@ -22,7 +20,7 @@ impl ClientConnectListener {
         }
     }
 
-    pub async fn listen(mut self) {
+    pub async fn listen(self) {
         loop {
             match self.listener.accept().await {
                 Ok((_socket, addr)) => {
