@@ -94,21 +94,21 @@ impl FrillsClientHandle {
         Self { service_name, worker_channel }
     }
 
-    pub async fn register_topic(&mut self, topic: &str) {
+    pub async fn register_topic(&self, topic: &str) {
         self.worker_channel
             .send(FrillsClientTask::RegisterTopic {
                 name: topic.to_string(),
             }).await;
     }
 
-    pub async fn subscribe_to_topic(&mut self, topic: &str) {
+    pub async fn subscribe_to_topic(&self, topic: &str) {
         self.worker_channel
             .send(FrillsClientTask::SubscribeToTopic {
                 name: topic.to_string(),
             }).await;
     }
 
-    pub async fn push_messages(&mut self, topic: &str, messages: Vec<Vec<u8>>) {
+    pub async fn push_messages(&self, topic: &str, messages: Vec<Vec<u8>>) {
         self.worker_channel
             .send(FrillsClientTask::PushMessages {
                 topic: topic.to_string(),
@@ -116,13 +116,13 @@ impl FrillsClientHandle {
             }).await;
     }
 
-    pub async fn ack_message(&mut self, message_ids: Vec<u32>) {
+    pub async fn ack_message(&self, message_ids: Vec<u32>) {
         self.worker_channel
             .send(FrillsClientTask::ACKMessages { message_ids })
             .await;
     }
 
-    pub async fn nack_message(&mut self, message_ids: Vec<u32>) {
+    pub async fn nack_message(&self, message_ids: Vec<u32>) {
         self.worker_channel
             .send(FrillsClientTask::NACKMessages { message_ids })
             .await;
